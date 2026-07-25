@@ -134,7 +134,7 @@ function wc_pos_pro() {
 
 // Activation / deactivation hooks must be registered at file-load time,
 // not inside a plugins_loaded callback — WordPress fires them before that hook.
-register_activation_hook( WC_POS_FILE, array( 'WC_POS_Pro', 'activate' ) );
-register_deactivation_hook( WC_POS_FILE, array( 'WC_POS_Pro', 'deactivate' ) );
+register_activation_hook( WC_POS_FILE, array( wc_pos_pro(), 'activate' ) );
+register_deactivation_hook( WC_POS_FILE, array( wc_pos_pro(), 'deactivate' ) );
 
 wc_pos_pro();
