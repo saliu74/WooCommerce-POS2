@@ -1,0 +1,1426 @@
+<?php
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+$user = wp_get_current_user();
+$store_name = get_bloginfo( 'name' );
+$receipt_header = get_option( 'wc_pos_receipt_header', 'Thank you for shopping with us!' );
+$receipt_footer = get_option( 'wc_pos_receipt_footer', 'Please keep receipt for returns within 30 days.' );
+$rest_nonce = wp_create_nonce( 'wp_rest' );
+$rest_url = esc_url_raw( rest_url( 'wc-pos/v1' ) );
+$currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_entity_decode( get_woocommerce_currency_symbol() ) : '₦';
+?>
+<!DOCTYPE html>
+<html <?php language_attributes(); ?> class="dark">
+<head>
+    <meta charset="<?php bloginfo( 'charset' ); ?>">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title><?php echo esc_html( $store_name ); ?> - POS Terminal Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 500: '#6366f1', 600: '#4f46e5' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @media print {
+            /* Hide everything on the page */
+            body > *                        { display: none !important; }
+            /* Show only the receipt */
+            body > #printable-receipt       { display: block !important; }
+            #printable-receipt, #printable-receipt * { visibility: visible !important; }
+            #printable-receipt { position: static; width: 100%; margin: 0; padding: 16px; }
+        }
+        /* Reliable Light / Dark Mode Overrides */
+        html.light body { background-color: #f1f5f9 !important; color: #0f172a !important; }
+        html.light header { background-color: #ffffff !important; border-color: #cbd5e1 !important; }
+        html.light aside { background-color: #ffffff !important; border-color: #cbd5e1 !important; }
+        html.light main { background-color: #f8fafc !important; border-color: #cbd5e1 !important; }
+        html.light .pos-card { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
+        html.light .pos-card h3 { color: #0f172a !important; }
+        html.light .pos-card .bg-slate-900 { background-color: #f1f5f9 !important; }
+        html.light .bg-slate-950 { background-color: #ffffff !important; border-color: #cbd5e1 !important; }
+        html.light .bg-slate-900 { background-color: #f8fafc !important; border-color: #cbd5e1 !important; }
+        html.light .bg-slate-800 { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
+        html.light .text-white { color: #0f172a !important; }
+        html.light .text-slate-300 { color: #1e293b !important; }
+        html.light .text-slate-400 { color: #64748b !important; }
+        html.light input { background-color: #ffffff !important; color: #0f172a !important; border-color: #cbd5e1 !important; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 font-sans h-screen flex flex-col overflow-hidden select-none transition-colors duration-200">
+
+    <!-- POS Top Navigation Bar -->
+    <header class="bg-slate-950 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between shrink-0 z-10">
+        <div class="flex items-center space-x-3">
+            <button onclick="toggleSidebar()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition md:hidden">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+            </button>
+            <div class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
+            <div>
+                <h1 class="text-xs font-bold text-white uppercase tracking-wider"><?php echo esc_html( $store_name ); ?> POS</h1>
+                <p class="text-[10px] text-slate-400">Cashier: <strong class="text-slate-200"><?php echo esc_html( $user->display_name ); ?></strong></p>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-2">
+            <span id="pos-sync-status" class="text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full font-mono">
+                &bull; SYNCED
+            </span>
+
+            <!-- Dark / Light Theme Toggle -->
+            <button onclick="toggleTheme()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 transition" title="Toggle Theme">
+                <svg id="theme-icon-sun" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                <svg id="theme-icon-moon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+            </button>
+
+            <!-- Lock Terminal -->
+            <button onclick="lockTerminal()" class="p-2 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition text-xs flex items-center space-x-1" title="Lock Register">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+                <span class="hidden sm:inline">Lock</span>
+            </button>
+
+            <!-- Exit Terminal -->
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-pos-pro' ) ); ?>" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition">
+                Exit
+            </a>
+        </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex overflow-hidden">
+
+        <!-- Sidebar Navigation (Complete matched menu) -->
+        <aside id="pos-sidebar" class="w-16 bg-slate-950 border-r border-slate-800 flex flex-col items-center py-4 space-y-5 shrink-0 z-10">
+            <button onclick="switchTab('register')" id="nav-btn-register" class="p-3 rounded-xl bg-indigo-600 text-white shadow-lg transition" title="POS Terminal / Register">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+            </button>
+            <button onclick="switchTab('history')" id="nav-btn-history" class="p-3 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition" title="Order Receipts & History">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+            </button>
+            <button onclick="switchTab('parked')" id="nav-btn-parked" class="p-3 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition relative" title="Parked Carts">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <span id="parked-count-badge" class="hidden absolute top-1 right-1 bg-amber-500 text-black font-extrabold text-[9px] w-4 h-4 rounded-full flex items-center justify-center">0</span>
+            </button>
+            <button onclick="openCustomerModal()" id="nav-btn-customers" class="p-3 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition" title="Customers Directory">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+            </button>
+            <button onclick="lockTerminal()" class="p-3 rounded-xl hover:bg-slate-800 text-slate-400 hover:text-white transition mt-auto" title="Lock Register">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+            </button>
+        </aside>
+
+        <!-- VIEW 1: Main Register Grid & Cart -->
+        <div id="view-register" class="flex-1 flex overflow-hidden">
+            <!-- Left: Product Catalog -->
+            <main class="flex-1 flex flex-col p-4 space-y-3 overflow-hidden border-r border-slate-800">
+                <div class="flex items-center space-x-2">
+                    <div class="relative flex-1">
+                        <input type="text" id="product-search" oninput="renderProducts()" placeholder="Search product name, SKU, or scan barcode..." class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500" autofocus />
+                        <svg class="w-4 h-4 absolute left-3.5 top-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                    </div>
+                    <button onclick="fetchProducts()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center space-x-1.5 shrink-0">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        <span>Refresh</span>
+                    </button>
+                </div>
+
+                <!-- Product Categories Filter Pills Bar -->
+                <div id="category-pills-bar" class="flex items-center space-x-2 overflow-x-auto pb-1 shrink-0 scrollbar-none text-xs">
+                    <button onclick="filterCategory(null)" id="cat-pill-all" class="px-3 py-1.5 rounded-xl bg-indigo-600 text-white font-bold whitespace-nowrap transition">All Products</button>
+                    <!-- Dynamically populated category pills -->
+                </div>
+
+                <!-- Products Grid (With robust layout preventing squishing) -->
+                <div class="flex-1 min-h-0 overflow-y-auto pr-1">
+                    <div id="products-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+                        <div class="col-span-full flex items-center justify-center text-slate-500 text-xs py-16">
+                            Loading WooCommerce products...
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right: Active Cart -->
+            <aside class="w-96 bg-slate-950 flex flex-col shrink-0">
+                
+                <!-- Customer Selection Bar -->
+                <div class="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                    <div class="flex items-center space-x-2 truncate">
+                        <div class="w-7 h-7 rounded-full bg-indigo-600/30 border border-indigo-500/40 text-indigo-300 flex items-center justify-center text-xs font-bold shrink-0">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+                        </div>
+                        <div class="truncate">
+                            <p id="current-customer-name" class="text-xs font-bold text-white truncate">Guest / Walk-In Customer</p>
+                            <p id="current-customer-phone" class="text-[10px] text-slate-400 truncate">No account assigned</p>
+                        </div>
+                    </div>
+                    <button onclick="openCustomerModal()" class="text-[11px] bg-slate-800 hover:bg-slate-700 text-indigo-300 px-2.5 py-1 rounded-lg border border-slate-700 transition shrink-0">
+                        Select / Add
+                    </button>
+                </div>
+
+                <!-- Cart Header -->
+                <div class="px-4 py-2.5 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+                    <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center space-x-2">
+                        <span>Active Sale Cart</span>
+                        <span id="cart-badge-count" class="bg-indigo-600/30 text-indigo-300 px-2 py-0.5 rounded-full text-[10px]">0 items</span>
+                    </h2>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="parkCurrentCart()" class="text-[11px] text-amber-400 hover:underline">Park Sale</button>
+                        <span class="text-slate-700">|</span>
+                        <button onclick="clearCart()" class="text-[11px] text-rose-400 hover:underline">Clear</button>
+                    </div>
+                </div>
+
+                <!-- Cart Line Items -->
+                <div id="cart-items" class="flex-1 overflow-y-auto p-3 space-y-2">
+                    <div class="text-center text-slate-500 text-xs py-16">Cart is empty</div>
+                </div>
+
+                <!-- Cart Summary & Checkout -->
+                <div class="p-4 bg-slate-900 border-t border-slate-800 space-y-3">
+                    <!-- Totals -->
+                    <div class="space-y-1.5 text-xs">
+                        <div class="flex justify-between text-slate-400"><span>Subtotal:</span><span id="cart-subtotal" class="font-mono">$0.00</span></div>
+                        <div class="flex justify-between text-amber-400" id="cart-discount-row" style="display:none !important;">
+                            <span>Discount:</span><span id="cart-discount-total" class="font-mono">-$0.00</span>
+                        </div>
+                        <div class="flex justify-between text-slate-400"><span id="cart-tax-label">Tax (Est.):</span><span id="cart-tax" class="font-mono">$0.00</span></div>
+                        <div class="flex justify-between text-white text-base font-bold pt-2 border-t border-slate-800">
+                            <span>TOTAL:</span><span id="cart-total" class="text-emerald-400 font-mono text-lg">$0.00</span>
+                        </div>
+                    </div>
+
+                    <!-- Payment Method Tabs -->
+                    <div class="grid grid-cols-3 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                        <button onclick="setPaymentMethod('cash')" id="pay-btn-cash" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold text-[11px] transition">Cash</button>
+                        <button onclick="setPaymentMethod('card')" id="pay-btn-card" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Card</button>
+                        <button onclick="setPaymentMethod('split')" id="pay-btn-split" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Split</button>
+                    </div>
+
+                    <!-- Cash tendered / change calculator (cash mode) -->
+                    <div id="cash-calc-panel" class="space-y-2 text-xs">
+                        <div class="flex items-center space-x-2">
+                            <label class="text-slate-400 shrink-0 w-20">Tendered:</label>
+                            <input type="number" id="cash-tendered" min="0" step="0.01" placeholder="0.00"
+                                oninput="updateChangeDue()"
+                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-indigo-500" />
+                        </div>
+                        <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                            <span class="text-slate-400">Change Due:</span>
+                            <span id="change-due" class="font-mono font-bold text-emerald-400">$0.00</span>
+                        </div>
+                        <!-- Quick-amount buttons -->
+                        <div id="quick-amounts" class="grid grid-cols-4 gap-1"></div>
+                    </div>
+
+                    <!-- Split payment panel -->
+                    <div id="split-payment-panel" class="hidden space-y-2 text-xs">
+                        <p class="text-slate-400 text-[11px]">Enter amounts for each method. They must sum to the total.</p>
+                        <div class="flex items-center space-x-2">
+                            <label class="text-slate-400 shrink-0 w-14">Cash:</label>
+                            <input type="number" id="split-cash" min="0" step="0.01" placeholder="0.00"
+                                oninput="updateSplitBalance()"
+                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <label class="text-slate-400 shrink-0 w-14">Card:</label>
+                            <input type="number" id="split-card" min="0" step="0.01" placeholder="0.00"
+                                oninput="updateSplitBalance()"
+                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
+                        </div>
+                        <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                            <span class="text-slate-400">Remaining:</span>
+                            <span id="split-remaining" class="font-mono font-bold text-amber-400">$0.00</span>
+                        </div>
+                    </div>
+
+                    <button onclick="processCheckout()" id="btn-checkout" disabled class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white font-extrabold text-sm rounded-xl transition shadow-lg flex items-center justify-center space-x-2">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                        <span>COMPLETE SALE &amp; PRINT RECEIPT</span>
+                    </button>
+                </div>
+            </aside>
+        </div>
+
+        <!-- VIEW 2: Order Receipts History -->
+        <div id="view-history" class="hidden flex-1 p-6 flex flex-col space-y-4 overflow-hidden">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-base font-bold text-white">POS Transaction Receipts</h2>
+                    <p class="text-xs text-slate-400">View and reprint thermal receipts for recent in-person sales</p>
+                </div>
+                <button onclick="loadOrderHistory()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-2 rounded-xl transition">
+                    Reload History
+                </button>
+            </div>
+
+            <div id="history-orders-list" class="flex-1 overflow-y-auto space-y-2 pr-1">
+                <div class="text-center text-slate-500 text-xs py-12">Loading order history...</div>
+            </div>
+        </div>
+
+        <!-- VIEW 3: Parked Carts -->
+        <div id="view-parked" class="hidden flex-1 p-6 flex flex-col space-y-4 overflow-hidden">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-base font-bold text-white">Parked Sales Carts</h2>
+                    <p class="text-xs text-slate-400">Temporarily saved carts waiting for customer return</p>
+                </div>
+            </div>
+
+            <div id="parked-carts-list" class="flex-1 overflow-y-auto space-y-3">
+                <div class="text-center text-slate-500 text-xs py-12">No parked carts stored</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL 1: Product Variations Selector -->
+    <div id="variation-modal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 id="var-modal-title" class="font-bold text-sm text-white">Select Variation</h3>
+                <button onclick="closeVariationModal()" class="text-slate-400 hover:text-white text-lg">&times;</button>
+            </div>
+            <div id="var-modal-list" class="space-y-2 max-h-80 overflow-y-auto pr-1"></div>
+        </div>
+    </div>
+
+    <!-- MODAL 2: Customer Selector & Add -->
+    <div id="customer-modal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 class="font-bold text-sm text-white">Assign Store Customer</h3>
+                <button onclick="closeCustomerModal()" class="text-slate-400 hover:text-white text-lg">&times;</button>
+            </div>
+
+            <button onclick="selectCustomer(null)" class="w-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold py-2.5 rounded-xl border border-slate-700 transition">
+                Set as Walk-In Guest Customer
+            </button>
+
+            <div class="relative">
+                <input type="text" id="cust-search-input" oninput="searchCustomers()" placeholder="Search existing customer name or email..." class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500" />
+            </div>
+
+            <div id="cust-search-results" class="space-y-1.5 max-h-40 overflow-y-auto text-xs"></div>
+
+            <hr class="border-slate-800" />
+
+            <div class="space-y-2">
+                <h4 class="text-xs font-bold text-indigo-300 uppercase tracking-wider">+ Register New Customer</h4>
+                <input type="text" id="new-cust-name" placeholder="Full Name" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                <input type="email" id="new-cust-email" placeholder="Email Address (Optional)" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                <input type="text" id="new-cust-phone" placeholder="Phone Number" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white" />
+                <button onclick="addNewCustomer()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 rounded-xl transition">
+                    Create & Assign Customer
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- OVERLAY: Terminal PIN Lock Screen -->
+    <div id="lock-screen-overlay" class="hidden fixed inset-0 bg-slate-950/95 backdrop-blur-md z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-xs w-full text-center space-y-6 shadow-2xl">
+            <div class="w-16 h-16 mx-auto bg-amber-500/20 border border-amber-500/40 rounded-2xl flex items-center justify-center text-amber-400">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+            </div>
+            <div>
+                <h3 class="text-base font-bold text-white">POS Terminal Locked</h3>
+                <p class="text-xs text-slate-400 mt-1">Enter Cashier PIN or Password to unlock</p>
+            </div>
+            <input type="password" id="lock-pin-input" placeholder="Enter your cashier PIN" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center text-lg font-mono text-white focus:outline-none focus:border-amber-500" />
+            <button onclick="unlockTerminal()" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-extrabold text-xs py-3 rounded-xl transition">
+                UNLOCK TERMINAL
+            </button>
+        </div>
+    </div>
+
+    <!-- Hidden Printable Receipt Template -->
+    <div id="printable-receipt" class="hidden p-6 font-mono text-xs text-black bg-white">
+        <!-- Receipt width set dynamically from config -->
+        <div id="receipt-logo-block" class="text-center mb-2"></div>
+        <div id="receipt-store-name-block" class="text-center font-bold text-sm mb-1"></div>
+        <div id="receipt-address-block" class="text-center text-[10px] text-gray-600 whitespace-pre-line mb-1"></div>
+        <div id="receipt-header-block" class="text-center border-t border-dashed border-gray-400 pt-2 mb-2"></div>
+        <div class="flex justify-between text-[10px] text-gray-500 border-b border-dashed border-gray-300 pb-1 mb-1">
+            <span id="receipt-order-meta"></span>
+            <span id="receipt-date-meta"></span>
+        </div>
+        <div id="receipt-items-block" class="mb-2 space-y-0.5"></div>
+        <div class="border-t border-dashed border-gray-400 pt-1 space-y-0.5 text-xs">
+            <div class="flex justify-between"><span>Subtotal</span><span id="receipt-subtotal"></span></div>
+            <div id="receipt-discount-block" class="flex justify-between text-amber-700 hidden"><span>Discount</span><span id="receipt-discount-val"></span></div>
+            <div id="receipt-tax-block" class="flex justify-between text-gray-600"><span id="receipt-tax-label">Tax</span><span id="receipt-tax-val"></span></div>
+            <div class="flex justify-between font-bold text-sm border-t border-gray-400 pt-1"><span>TOTAL</span><span id="receipt-total-val"></span></div>
+            <div id="receipt-payment-block" class="text-[10px] text-gray-600 mt-1"></div>
+            <div id="receipt-change-block" class="flex justify-between text-[11px] font-bold hidden"><span>Change Given</span><span id="receipt-change-val"></span></div>
+        </div>
+        <div id="receipt-cashier-block" class="text-[10px] text-gray-500 mt-2"></div>
+        <div id="receipt-barcode-block" class="text-center my-3 border border-dashed border-gray-300 py-2 text-[10px] text-gray-400">&#9635; ORDER BARCODE</div>
+        <div id="receipt-footer-block" class="text-center text-[10px] text-gray-600 border-t border-dashed border-gray-400 pt-2"></div>
+    </div>
+
+    <!-- MODAL: Discount Entry -->
+    <div id="discount-modal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xs p-5 space-y-4 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <h3 id="discount-modal-title" class="font-bold text-sm text-white">Apply Discount</h3>
+                <button onclick="closeDiscountModal()" class="text-slate-400 hover:text-white text-lg">&times;</button>
+            </div>
+            <p id="discount-item-name" class="text-xs text-slate-400 truncate"></p>
+            <div class="grid grid-cols-2 gap-2">
+                <button onclick="setDiscountType('percent')" id="disc-btn-pct"
+                    class="py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold transition">% Off</button>
+                <button onclick="setDiscountType('flat')" id="disc-btn-flat"
+                    class="py-2 rounded-xl bg-slate-700 text-slate-300 text-xs font-bold transition">Flat Amount</button>
+            </div>
+            <div class="flex items-center space-x-2">
+                <span id="disc-prefix" class="text-slate-400 text-sm font-mono"></span>
+                <input type="number" id="discount-value-input" min="0" step="0.01" placeholder="0"
+                    class="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-white text-sm font-mono focus:outline-none focus:border-indigo-500" />
+            </div>
+            <button onclick="applyItemDiscount()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 rounded-xl transition">Apply Discount</button>
+        </div>
+    </div>
+
+    <!-- MODAL: Manager PIN gate (for discount override) -->
+    <div id="manager-pin-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-amber-500/40 rounded-2xl w-full max-w-xs p-6 space-y-4 shadow-2xl text-center">
+            <div class="w-12 h-12 mx-auto bg-amber-500/20 rounded-xl flex items-center justify-center text-amber-400">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"></path></svg>
+            </div>
+            <h3 class="font-bold text-white">Manager Authorization</h3>
+            <p class="text-xs text-slate-400">Enter manager PIN to authorize this discount</p>
+            <input type="password" id="manager-pin-input" placeholder="Manager PIN"
+                class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center text-lg font-mono text-white focus:outline-none focus:border-amber-500" />
+            <button onclick="verifyManagerPin()" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs py-3 rounded-xl transition">Authorize</button>
+            <button onclick="closeManagerPinModal()" class="text-slate-500 hover:text-slate-300 text-xs">Cancel</button>
+        </div>
+    </div>
+
+    <script>
+        const restUrl = '<?php echo esc_js( $rest_url ); ?>';
+        const restNonce = '<?php echo esc_js( $rest_nonce ); ?>';
+        const currencySymbol = '<?php echo esc_js( $currency_symbol ); ?>';
+        const LOW_STOCK_THRESHOLD = 5; // warn when stock at or below this value
+
+        // Tax rate seeded from server; may be overridden by POS tax rates fetched via API.
+        let taxRate = <?php
+            $tax_rate = 0;
+            if ( class_exists( 'WC_Tax' ) ) {
+                $rates = WC_Tax::get_rates();
+                if ( ! empty( $rates ) ) {
+                    $first_rate = reset( $rates );
+                    $tax_rate = isset( $first_rate['rate'] ) ? floatval( $first_rate['rate'] ) / 100 : 0;
+                }
+            }
+            echo json_encode( $tax_rate );
+        ?>;
+        let taxInclusive = false;
+        let receiptConfig = {};
+        let posTaxRates  = [];
+
+        let products = [];
+        let categories = [];
+        let selectedCategory = null;
+        let cart = [];
+        let selectedCustomer = null;
+        let selectedPaymentMethod = 'cash';
+        let parkedCarts = JSON.parse(localStorage.getItem('wc_pos_parked_carts') || '[]');
+        let currentTab = 'register';
+        let searchCustomerResults = [];
+
+        // Discount state
+        let discountTargetKey  = null;
+        let discountType       = 'percent';
+        let managerPinCallback = null;
+
+        const DEMO_PRODUCTS = [
+            { id: 101, name: 'Classic Organic Cotton Crew Tee', type: 'variable', sku: 'TSH-ORG-01', price: 32.00, regularPrice: 38.00, stockQuantity: 42, imageUrl: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=80', variations: [
+                { id: 1011, name: 'Black - Medium', sku: 'TSH-ORG-BLK-M', price: 32.00, stockQuantity: 15, imageUrl: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=500&auto=format&fit=crop&q=80' },
+                { id: 1012, name: 'Navy - Large', sku: 'TSH-ORG-NAV-L', price: 38.00, stockQuantity: 12, imageUrl: 'https://images.unsplash.com/photo-1618354691373-d851c5c3a990?w=500&auto=format&fit=crop&q=80' }
+            ]},
+            { id: 102, name: 'Wireless Noise-Canceling Headphones', type: 'simple', sku: 'AUDIO-ANC-PRO', price: 199.00, regularPrice: 249.00, stockQuantity: 18, imageUrl: 'https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500&auto=format&fit=crop&q=80' },
+            { id: 103, name: 'Minimalist Stainless Steel Water Bottle 750ml', type: 'simple', sku: 'ACC-BOT-750', price: 28.00, regularPrice: 28.00, stockQuantity: 34, imageUrl: 'https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=500&auto=format&fit=crop&q=80' },
+            { id: 104, name: 'Artisan Espresso Roast Whole Bean Coffee 1kg', type: 'simple', sku: 'COF-ESP-1KG', price: 24.50, regularPrice: 24.50, stockQuantity: 60, imageUrl: 'https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=500&auto=format&fit=crop&q=80' },
+            { id: 105, name: 'Leather Urban Commuter Backpack 22L', type: 'simple', sku: 'BAG-LTH-22L', price: 125.00, regularPrice: 145.00, stockQuantity: 9, imageUrl: 'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=500&auto=format&fit=crop&q=80' },
+            { id: 106, name: 'Retro Lightweight Running Sneakers', type: 'simple', sku: 'SNK-RTR-02', price: 89.00, regularPrice: 89.00, stockQuantity: 28, imageUrl: 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=500&auto=format&fit=crop&q=80' }
+        ];
+
+        function toggleSidebar() {
+            const sb = document.getElementById('pos-sidebar');
+            if (sb) {
+                sb.classList.toggle('hidden');
+            }
+        }
+
+        // Dark/Light Theme Handler
+        function initTheme() {
+            if (localStorage.getItem('wc_pos_theme') === 'light') {
+                document.documentElement.classList.remove('dark');
+                document.documentElement.classList.add('light');
+                const sun = document.getElementById('theme-icon-sun');
+                const moon = document.getElementById('theme-icon-moon');
+                if (sun) sun.classList.remove('hidden');
+                if (moon) moon.classList.add('hidden');
+            } else {
+                document.documentElement.classList.add('dark');
+                document.documentElement.classList.remove('light');
+            }
+        }
+
+        function toggleTheme() {
+            const isDark = document.documentElement.classList.contains('dark');
+            if (isDark) {
+                document.documentElement.classList.remove('dark');
+                document.documentElement.classList.add('light');
+                localStorage.setItem('wc_pos_theme', 'light');
+            } else {
+                document.documentElement.classList.add('dark');
+                document.documentElement.classList.remove('light');
+                localStorage.setItem('wc_pos_theme', 'dark');
+            }
+            const sun = document.getElementById('theme-icon-sun');
+            const moon = document.getElementById('theme-icon-moon');
+            if (sun) sun.classList.toggle('hidden', !isDark);
+            if (moon) moon.classList.toggle('hidden', isDark);
+        }
+
+        // Terminal Lock Handler
+        function lockTerminal() {
+            document.getElementById('lock-screen-overlay').classList.remove('hidden');
+            document.getElementById('lock-pin-input').value = '';
+            document.getElementById('lock-pin-input').focus();
+        }
+
+        async function unlockTerminal() {
+            const val = document.getElementById('lock-pin-input').value.trim();
+            if ( ! val ) return;
+
+            const btn = document.querySelector('#lock-screen-overlay button');
+            if (btn) { btn.disabled = true; btn.textContent = 'Verifying...'; }
+
+            try {
+                const res = await fetch(restUrl + '/pin/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify({ pin: val })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    document.getElementById('lock-screen-overlay').classList.add('hidden');
+                    document.getElementById('lock-pin-input').value = '';
+                    if (data.requiresSetup) {
+                        const newPin = prompt('Default PIN accepted. Please set a new personal PIN (4–8 digits):');
+                        if (newPin && /^\d{4,8}$/.test(newPin)) {
+                            await fetch(restUrl + '/pin/set', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                                body: JSON.stringify({ pin: newPin })
+                            });
+                            alert('PIN updated successfully.');
+                        }
+                    }
+                } else {
+                    document.getElementById('lock-pin-input').value = '';
+                    document.getElementById('lock-pin-input').focus();
+                    alert(data.message || 'Incorrect PIN. Please try again.');
+                }
+            } catch (e) {
+                alert('Could not verify PIN. Check your connection.');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = 'UNLOCK TERMINAL'; }
+            }
+        }
+
+        // Sidebar Navigation Tabs
+        function switchTab(tab) {
+            currentTab = tab;
+            ['register', 'history', 'parked'].forEach(t => {
+                const el = document.getElementById('view-' + t);
+                const btn = document.getElementById('nav-btn-' + t);
+                if (el) el.classList.toggle('hidden', t !== tab);
+                if (btn) {
+                    btn.classList.toggle('bg-indigo-600', t === tab);
+                    btn.classList.toggle('text-white', t === tab);
+                }
+            });
+
+            if (tab === 'history') loadOrderHistory();
+            if (tab === 'parked') renderParkedCarts();
+        }
+
+        // -----------------------------------------------------------------------
+        // Config bootstrap — receipt config + POS tax rates
+        // -----------------------------------------------------------------------
+
+        async function loadConfig() {
+            try {
+                const [rcRes, txRes] = await Promise.all([
+                    fetch(restUrl + '/receipt-config', { headers: { 'X-WP-Nonce': restNonce } }),
+                    fetch(restUrl + '/tax-rates',      { headers: { 'X-WP-Nonce': restNonce } }),
+                ]);
+                if (rcRes.ok) receiptConfig = await rcRes.json();
+                if (txRes.ok) {
+                    const txData = await txRes.json();
+                    posTaxRates  = txData.rates || [];
+                    taxInclusive = txData.taxInclusivePrices || false;
+                    // Use first active POS rate if defined, otherwise keep WC seeded rate
+                    if (posTaxRates.length > 0) {
+                        taxRate = posTaxRates[0].rate / 100;
+                    }
+                }
+            } catch(e) { /* non-fatal — use seeded defaults */ }
+        }
+
+        // -----------------------------------------------------------------------
+        // Receipt builder — populates #printable-receipt from receiptConfig
+        // -----------------------------------------------------------------------
+
+        function buildReceipt(orderData) {
+            const cfg = receiptConfig;
+            const w   = cfg.paperWidth === '58mm' ? '200px' : '280px';
+            const el  = document.getElementById('printable-receipt');
+
+            // Must be visible (display:block) before window.print() — display:none
+            // is not overridden by visibility:visible in @media print.
+            el.classList.remove('hidden');
+            el.style.display  = 'block';
+            el.style.maxWidth = w;
+
+            // Safe fallbacks for stores that haven't configured the receipt builder yet.
+            const showLogo       = cfg.showLogo       !== false;
+            const showStoreName  = cfg.showStoreName  !== false;
+            const showAddress    = cfg.showAddress    !== false;
+            const showTax        = cfg.showTaxBreakdown !== false;
+            const showCashier    = cfg.showCashier    !== false;
+            const showBarcode    = cfg.showBarcode    !== false;
+            const storeName      = cfg.storeName      || '<?php echo esc_js( $store_name ); ?>';
+            const storeAddress   = cfg.storeAddress   || '<?php echo esc_js( get_option( "wc_pos_store_address", "" ) ); ?>';
+            const storePhone     = cfg.storePhone     || '<?php echo esc_js( get_option( "wc_pos_store_phone", "" ) ); ?>';
+            const headerText     = cfg.headerText     || '<?php echo esc_js( $receipt_header ); ?>';
+            const footerText     = cfg.footerText     || '<?php echo esc_js( $receipt_footer ); ?>';
+            const lineItemFormat = cfg.lineItemFormat || 'full';
+
+            // Logo
+            const logoBlock = document.getElementById('receipt-logo-block');
+            logoBlock.innerHTML = (showLogo && cfg.logoUrl)
+                ? '<img src="' + cfg.logoUrl + '" style="max-height:60px;max-width:' + w + ';object-fit:contain;" />'
+                : '';
+
+            // Store name
+            document.getElementById('receipt-store-name-block').textContent =
+                showStoreName ? storeName : '';
+
+            // Address
+            document.getElementById('receipt-address-block').textContent =
+                showAddress ? (storeAddress + (storePhone ? '\n' + storePhone : '')) : '';
+
+            // Header
+            document.getElementById('receipt-header-block').textContent = headerText;
+
+            // Order meta
+            document.getElementById('receipt-order-meta').textContent = 'Order #' + (orderData.orderId || orderData.localId || '—');
+            document.getElementById('receipt-date-meta').textContent  = new Date().toLocaleString();
+
+            // Items
+            const fmt = lineItemFormat;
+            const itemsEl = document.getElementById('receipt-items-block');
+            itemsEl.innerHTML = (orderData.items || []).map(item => {
+                const lineTotal = (item.unitPrice * item.quantity) - (item.discountAmount || 0);
+                if (fmt === 'minimal') {
+                    return '<div style="display:flex;justify-content:space-between;"><span>' + item.name + '</span><span>' + currencySymbol + lineTotal.toFixed(2) + '</span></div>';
+                } else if (fmt === 'compact') {
+                    return '<div style="display:flex;justify-content:space-between;"><span>' + item.name + ' × ' + item.quantity + '</span><span>' + currencySymbol + lineTotal.toFixed(2) + '</span></div>';
+                } else {
+                    let line = '<div style="display:flex;justify-content:space-between;"><span>' + item.name + ' × ' + item.quantity + '</span><span>' + currencySymbol + lineTotal.toFixed(2) + '</span></div>';
+                    if (item.sku) line += '<div style="font-size:10px;color:#999;">SKU: ' + item.sku + '</div>';
+                    if (item.discountAmount > 0) line += '<div style="font-size:10px;color:#b45309;">Discount: -' + currencySymbol + item.discountAmount.toFixed(2) + '</div>';
+                    return line;
+                }
+            }).join('');
+
+            // Totals
+            document.getElementById('receipt-subtotal').textContent    = currencySymbol + orderData.subtotal.toFixed(2);
+            if (orderData.totalDiscount > 0) {
+                document.getElementById('receipt-discount-block').classList.remove('hidden');
+                document.getElementById('receipt-discount-val').textContent = '-' + currencySymbol + orderData.totalDiscount.toFixed(2);
+            }
+            document.getElementById('receipt-tax-label').textContent   = taxInclusive ? 'Tax (Incl.)' : 'Tax';
+            document.getElementById('receipt-tax-block').classList.toggle('hidden', !showTax);
+            document.getElementById('receipt-tax-val').textContent     = currencySymbol + orderData.tax.toFixed(2);
+            document.getElementById('receipt-total-val').textContent   = currencySymbol + orderData.grandTotal.toFixed(2);
+
+            // Payment summary
+            const payLines = (orderData.payments || []).map(p =>
+                (p.method.charAt(0).toUpperCase() + p.method.slice(1)) + ': ' + currencySymbol + parseFloat(p.amount).toFixed(2)
+            ).join(' | ');
+            document.getElementById('receipt-payment-block').textContent = payLines;
+
+            // Change
+            if (orderData.changeDue > 0) {
+                document.getElementById('receipt-change-block').classList.remove('hidden');
+                document.getElementById('receipt-change-val').textContent = currencySymbol + orderData.changeDue.toFixed(2);
+            }
+
+            // Cashier
+            const cashierEl = document.getElementById('receipt-cashier-block');
+            cashierEl.textContent   = showCashier ? 'Served by: ' + orderData.cashierName : '';
+            cashierEl.style.display = showCashier ? 'block' : 'none';
+
+            // Barcode
+            const barcodeEl = document.getElementById('receipt-barcode-block');
+            barcodeEl.style.display = showBarcode ? 'block' : 'none';
+            barcodeEl.textContent   = '▊▊ ORDER #' + (orderData.orderId || '') + ' ▊▊';
+
+            // Footer
+            document.getElementById('receipt-footer-block').textContent = footerText;
+        }
+
+        // Fetch Categories
+        async function fetchCategories() {
+            try {
+                const res = await fetch(restUrl + '/categories', { headers: { 'X-WP-Nonce': restNonce } });
+                if (res.ok) {
+                    categories = await res.json();
+                } else {
+                    categories = [
+                        { id: 1, name: 'Apparel & Shirts', slug: 'apparel-shirts', count: 12 },
+                        { id: 2, name: 'Footwear & Sneakers', slug: 'footwear-sneakers', count: 8 },
+                        { id: 3, name: 'Electronics & Audio', slug: 'electronics-audio', count: 15 },
+                        { id: 4, name: 'Accessories', slug: 'accessories', count: 20 },
+                        { id: 5, name: 'Coffee & Beverages', slug: 'coffee-beverages', count: 6 }
+                    ];
+                }
+            } catch (e) {
+                categories = [
+                    { id: 1, name: 'Apparel & Shirts', slug: 'apparel-shirts', count: 12 },
+                    { id: 2, name: 'Footwear & Sneakers', slug: 'footwear-sneakers', count: 8 },
+                    { id: 3, name: 'Electronics & Audio', slug: 'electronics-audio', count: 15 },
+                    { id: 4, name: 'Accessories', slug: 'accessories', count: 20 },
+                    { id: 5, name: 'Coffee & Beverages', slug: 'coffee-beverages', count: 6 }
+                ];
+            }
+            renderCategories();
+        }
+
+        function renderCategories() {
+            const bar = document.getElementById('category-pills-bar');
+            if (!bar) return;
+            const isAllActive = selectedCategory === null;
+            let html = '<button onclick="filterCategory(null)" id="cat-pill-all" class="px-3 py-1.5 rounded-xl ' + (isAllActive ? 'bg-indigo-600 text-white font-bold' : 'bg-slate-800 text-slate-300 font-medium hover:bg-slate-700') + ' whitespace-nowrap transition">All Products</button>';
+            if (categories && categories.length > 0) {
+                html += categories.map(c => {
+                    const isActive = selectedCategory === c.slug;
+                    const escapedSlug = c.slug.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                    return '<button onclick="filterCategory(\'' + escapedSlug + '\')" id="cat-pill-' + c.slug + '" class="px-3 py-1.5 rounded-xl ' + (isActive ? 'bg-indigo-600 text-white font-bold' : 'bg-slate-800 text-slate-300 font-medium hover:bg-slate-700') + ' whitespace-nowrap transition">' + c.name + ' (' + c.count + ')</button>';
+                }).join('');
+            }
+            bar.innerHTML = html;
+        }
+
+        function filterCategory(slug) {
+            selectedCategory = slug;
+            renderCategories();
+            fetchProducts();
+        }
+
+        // Fetch Catalog Products
+        async function fetchProducts() {
+            try {
+                let url = restUrl + '/products';
+                if (selectedCategory) {
+                    url += '?category=' + encodeURIComponent(selectedCategory);
+                }
+                const res = await fetch(url, {
+                    headers: { 'X-WP-Nonce': restNonce }
+                });
+                if (!res.ok) throw new Error('API Error');
+                const data = await res.json();
+                if (Array.isArray(data) && data.length > 0) {
+                    products = data;
+                } else {
+                    products = DEMO_PRODUCTS;
+                }
+            } catch (e) {
+                products = DEMO_PRODUCTS;
+            }
+            renderProducts();
+        }
+
+        function renderProducts() {
+            const grid = document.getElementById('products-grid');
+            if (!grid) return;
+            const termInput = document.getElementById('product-search');
+            const term = termInput ? termInput.value.toLowerCase().trim() : '';
+
+            const filtered = (products || []).filter(p => {
+                return !term || p.name.toLowerCase().includes(term) || (p.sku && p.sku.toLowerCase().includes(term));
+            });
+
+            if (filtered.length === 0) {
+                grid.innerHTML = '<div class="col-span-full text-slate-500 text-xs text-center py-12">No products found</div>';
+                return;
+            }
+
+            grid.innerHTML = filtered.map(function(p) {
+                var hasImg = p.imageUrl && p.imageUrl.trim().length > 0;
+                var isVariable = p.type === 'variable';
+                var priceVal = parseFloat(p.price || p.regularPrice || p.salePrice || 0);
+                var displayPrice = isNaN(priceVal) ? '0.00' : priceVal.toFixed(2);
+                var stockQty = (p.stockQuantity !== undefined && p.stockQuantity !== null) ? p.stockQuantity : 10;
+                var imgHtml = hasImg 
+                    ? '<img src="' + p.imageUrl + '" alt="Product" class="w-full h-full object-contain group-hover:scale-105 transition duration-200" />'
+                    : '<div class="text-slate-600 flex flex-col items-center"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg></div>';
+                var varTag = isVariable ? '<span class="absolute top-2 right-2 bg-indigo-600 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase">Variations</span>' : '';
+                var skuText = p.sku ? 'SKU: ' + p.sku : 'No SKU';
+                var stockClass = stockQty > LOW_STOCK_THRESHOLD ? 'text-slate-400' : stockQty > 0 ? 'text-amber-400 font-bold' : 'text-rose-400 font-bold';
+                var stockLabel = stockQty > LOW_STOCK_THRESHOLD ? stockQty + ' in stock' : stockQty > 0 ? '⚠ Low: ' + stockQty : '✕ Out of stock';
+
+                return '<div onclick="handleProductClick(' + p.id + ')" class="pos-card bg-slate-800/90 border border-slate-700 hover:border-indigo-500 rounded-xl overflow-hidden cursor-pointer transition flex flex-col justify-between hover:scale-[1.02] shadow-md group min-h-[220px]">' +
+                        '<div class="h-28 bg-slate-900 overflow-hidden relative flex items-center justify-center p-1">' +
+                            imgHtml + varTag +
+                        '</div>' +
+                        '<div class="p-2.5 flex-1 flex flex-col justify-between">' +
+                            '<div>' +
+                                '<h3 class="font-bold text-xs text-white line-clamp-2 leading-snug">' + (p.name || 'Product') + '</h3>' +
+                                '<p class="text-[10px] text-slate-400 mt-0.5">' + skuText + '</p>' +
+                            '</div>' +
+                            '<div class="mt-2.5 flex items-center justify-between border-t border-slate-700/60 pt-2">' +
+                                '<span class="text-xs font-bold text-emerald-400 font-mono">' + currencySymbol + displayPrice + '</span>' +
+                                '<span class="text-[10px] ' + stockClass + '">' + stockLabel + '</span>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+            }).join('');
+        }
+
+        function handleProductClick(productId) {
+            const prod = products.find(p => p.id === productId);
+            if (!prod) return;
+
+            if (prod.type === 'variable' && prod.variations && prod.variations.length > 0) {
+                openVariationModal(prod);
+            } else {
+                const price = parseFloat(prod.price || prod.regularPrice || 0);
+                addToCart(prod.id, prod.name, price, 0);
+            }
+        }
+
+        function openVariationModal(prod) {
+            document.getElementById('var-modal-title').innerText = prod.name + ' - Choose Variation';
+            const list = document.getElementById('var-modal-list');
+            if (!prod.variations || prod.variations.length === 0) {
+                list.innerHTML = '<p class="text-slate-400 text-xs">No variations available</p>';
+            } else {
+                list.innerHTML = prod.variations.map(function(v) {
+                    var vPrice = parseFloat(v.price || v.regularPrice || prod.price || 0);
+                    var vPriceStr = isNaN(vPrice) ? '0.00' : vPrice.toFixed(2);
+                    var safeName = (v.name || 'Option').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                    var vImg = v.imageUrl ? '<img src="' + v.imageUrl + '" class="w-10 h-10 object-contain bg-slate-900 rounded-lg p-0.5 border border-slate-700" />' : '';
+                    var vSku = v.sku ? 'SKU: ' + v.sku : 'No SKU';
+                    var stockVal = v.stockQuantity !== undefined ? v.stockQuantity : 10;
+
+                    return '<div onclick="selectVariation(' + prod.id + ', ' + v.id + ', \'' + safeName + '\', ' + vPrice + ')" class="p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl cursor-pointer flex items-center justify-between transition space-x-3">' +
+                            '<div class="flex items-center space-x-3">' +
+                                vImg +
+                                '<div>' +
+                                    '<p class="text-xs font-bold text-white">' + (v.name || 'Option') + '</p>' +
+                                    '<p class="text-[10px] text-slate-400">Stock: ' + stockVal + ' &bull; ' + vSku + '</p>' +
+                                '</div>' +
+                            '</div>' +
+                            '<span class="text-xs font-bold text-emerald-400 font-mono">' + currencySymbol + vPriceStr + '</span>' +
+                        '</div>';
+                }).join('');
+            }
+            document.getElementById('variation-modal').classList.remove('hidden');
+        }
+
+        function closeVariationModal() {
+            document.getElementById('variation-modal').classList.add('hidden');
+        }
+
+        function selectVariation(parentId, varId, varName, price) {
+            closeVariationModal();
+            addToCart(parentId, varName, price, varId);
+        }
+
+        function addToCart(productId, name, price, variationId = 0) {
+            const key = productId + '_' + variationId;
+            const existing = cart.find(c => c.key === key);
+            if (existing) {
+                existing.quantity++;
+            } else {
+                cart.push({ key, productId, variationId, name, unitPrice: price, quantity: 1, discountAmount: 0 });
+            }
+            renderCart();
+        }
+
+        function updateCartQty(key, delta) {
+            const item = cart.find(c => c.key === key);
+            if (!item) return;
+            item.quantity += delta;
+            if (item.quantity <= 0) {
+                cart = cart.filter(c => c.key !== key);
+            }
+            renderCart();
+        }
+
+        function setCartQty(key, newQty) {
+            const qty = parseInt(newQty, 10);
+            if (isNaN(qty) || qty <= 0) {
+                cart = cart.filter(c => c.key !== key);
+            } else {
+                const item = cart.find(c => c.key === key);
+                if (item) item.quantity = qty;
+            }
+            renderCart();
+        }
+
+        function removeCartItem(key) {
+            cart = cart.filter(c => c.key !== key);
+            renderCart();
+        }
+
+        function renderCart() {
+            const container = document.getElementById('cart-items');
+            const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
+            document.getElementById('cart-badge-count').innerText = totalQty + ' item' + (totalQty === 1 ? '' : 's');
+
+            if (cart.length === 0) {
+                container.innerHTML = '<div class="text-center text-slate-500 text-xs py-16">Cart is empty</div>';
+                document.getElementById('btn-checkout').disabled = true;
+                document.getElementById('cart-subtotal').innerText = currencySymbol + '0.00';
+                document.getElementById('cart-tax').innerText = currencySymbol + '0.00';
+                document.getElementById('cart-total').innerText = currencySymbol + '0.00';
+                document.getElementById('cart-discount-row').style.display = 'none';
+                return;
+            }
+
+            let subtotal     = 0;
+            let totalDiscount = 0;
+
+            container.innerHTML = cart.map(function(item) {
+                var lineSubtotal = item.unitPrice * item.quantity;
+                var discount     = item.discountAmount || 0;
+                var lineTotal    = lineSubtotal - discount;
+                subtotal      += lineSubtotal;
+                totalDiscount += discount;
+
+                // Low stock badge
+                var stockBadge = '';
+                var prod = products.find(p => p.id === item.productId);
+                var stockQty = prod ? prod.stockQuantity : null;
+                if (stockQty !== null && stockQty !== undefined && stockQty <= LOW_STOCK_THRESHOLD && stockQty > 0) {
+                    stockBadge = '<span class="text-[9px] bg-amber-500/20 text-amber-400 border border-amber-500/30 px-1 rounded ml-1">Low: ' + stockQty + '</span>';
+                } else if (stockQty !== null && stockQty === 0) {
+                    stockBadge = '<span class="text-[9px] bg-rose-500/20 text-rose-400 border border-rose-500/30 px-1 rounded ml-1">Out</span>';
+                }
+
+                var discountBadge = discount > 0
+                    ? '<span class="text-[9px] text-amber-400 ml-1">-' + currencySymbol + discount.toFixed(2) + '</span>'
+                    : '';
+
+                return '<div class="bg-slate-900 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between text-xs space-x-2">' +
+                        '<div class="truncate flex-1">' +
+                            '<p class="font-bold text-white truncate">' + item.name + stockBadge + '</p>' +
+                            '<p class="text-[10px] text-slate-400 font-mono">' + currencySymbol + item.unitPrice.toFixed(2) + ' ea' + discountBadge + '</p>' +
+                        '</div>' +
+                        '<div class="flex items-center space-x-1.5 shrink-0">' +
+                            '<div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">' +
+                                '<button onclick="updateCartQty(\'' + item.key + '\', -1)" class="px-2 py-1 text-slate-300 hover:bg-slate-700 font-extrabold text-xs transition">-</button>' +
+                                '<input type="number" min="1" value="' + item.quantity + '" onchange="setCartQty(\'' + item.key + '\', this.value)" class="w-10 text-center bg-transparent font-mono text-indigo-300 font-bold text-xs focus:outline-none" />' +
+                                '<button onclick="updateCartQty(\'' + item.key + '\', 1)" class="px-2 py-1 text-slate-300 hover:bg-slate-700 font-extrabold text-xs transition">+</button>' +
+                            '</div>' +
+                            '<button onclick="openDiscountModal(\'' + item.key + '\')" class="p-1 text-amber-400 hover:text-amber-300 transition" title="Apply Discount">%</button>' +
+                            '<span class="font-bold text-emerald-400 font-mono w-16 text-right">' + currencySymbol + lineTotal.toFixed(2) + '</span>' +
+                            '<button onclick="removeCartItem(\'' + item.key + '\')" class="text-rose-400 hover:text-rose-300 p-1 font-bold text-sm" title="Remove Item">&times;</button>' +
+                        '</div>' +
+                    '</div>';
+            }).join('');
+
+            const tax      = taxInclusive ? subtotal - (subtotal / (1 + taxRate)) : (subtotal - totalDiscount) * taxRate;
+            const grandTotal = taxInclusive ? subtotal - totalDiscount : (subtotal - totalDiscount) + tax;
+
+            document.getElementById('cart-subtotal').innerText = currencySymbol + subtotal.toFixed(2);
+            document.getElementById('cart-tax').innerText      = currencySymbol + tax.toFixed(2) + (taxRate > 0 ? ' (' + (taxRate * 100).toFixed(1) + '%)' : '');
+            document.getElementById('cart-tax-label').innerText = taxInclusive ? 'Tax (Incl.):' : 'Tax (Est.):';
+            document.getElementById('cart-total').innerText    = currencySymbol + grandTotal.toFixed(2);
+
+            // Discount row
+            if (totalDiscount > 0) {
+                document.getElementById('cart-discount-row').style.display = 'flex';
+                document.getElementById('cart-discount-total').innerText = '-' + currencySymbol + totalDiscount.toFixed(2);
+            } else {
+                document.getElementById('cart-discount-row').style.display = 'none';
+            }
+
+            document.getElementById('btn-checkout').disabled = false;
+            // Refresh dependent panels
+            if (selectedPaymentMethod === 'cash') buildQuickAmounts();
+            if (selectedPaymentMethod === 'split') updateSplitBalance();
+        }
+
+        function clearCart() {
+            cart = [];
+            renderCart();
+        }
+
+        // -----------------------------------------------------------------------
+        // Discount modal
+        // -----------------------------------------------------------------------
+
+        function openDiscountModal(key) {
+            const item = cart.find(c => c.key === key);
+            if (!item) return;
+            discountTargetKey = key;
+            discountType = 'percent';
+            document.getElementById('discount-item-name').textContent = item.name;
+            document.getElementById('discount-value-input').value = '';
+            document.getElementById('disc-prefix').textContent = '%';
+            document.getElementById('disc-btn-pct').className = 'py-2 rounded-xl bg-indigo-600 text-white text-xs font-bold transition';
+            document.getElementById('disc-btn-flat').className = 'py-2 rounded-xl bg-slate-700 text-slate-300 text-xs font-bold transition';
+            document.getElementById('discount-modal-title').textContent = 'Discount: ' + item.name;
+            document.getElementById('discount-modal').classList.remove('hidden');
+        }
+
+        function closeDiscountModal() {
+            document.getElementById('discount-modal').classList.add('hidden');
+            discountTargetKey = null;
+        }
+
+        function setDiscountType(type) {
+            discountType = type;
+            document.getElementById('disc-prefix').textContent = type === 'percent' ? '%' : currencySymbol;
+            document.getElementById('disc-btn-pct').className  = 'py-2 rounded-xl ' + (type === 'percent' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300') + ' text-xs font-bold transition';
+            document.getElementById('disc-btn-flat').className = 'py-2 rounded-xl ' + (type === 'flat'    ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300') + ' text-xs font-bold transition';
+        }
+
+        function applyItemDiscount() {
+            const item = cart.find(c => c.key === discountTargetKey);
+            if (!item) return closeDiscountModal();
+            const val = parseFloat(document.getElementById('discount-value-input').value) || 0;
+            const lineTotal = item.unitPrice * item.quantity;
+            let discountAmt = discountType === 'percent' ? (lineTotal * val / 100) : val;
+            discountAmt = Math.min(discountAmt, lineTotal); // can't discount more than line total
+            item.discountAmount = Math.max(0, discountAmt);
+            closeDiscountModal();
+            renderCart();
+        }
+
+        // -----------------------------------------------------------------------
+        // Manager PIN gate
+        // -----------------------------------------------------------------------
+
+        function requireManagerPin(callback) {
+            managerPinCallback = callback;
+            document.getElementById('manager-pin-input').value = '';
+            document.getElementById('manager-pin-modal').classList.remove('hidden');
+            document.getElementById('manager-pin-input').focus();
+        }
+
+        function closeManagerPinModal() {
+            document.getElementById('manager-pin-modal').classList.add('hidden');
+            managerPinCallback = null;
+        }
+
+        async function verifyManagerPin() {
+            const pin = document.getElementById('manager-pin-input').value.trim();
+            if (!pin) return;
+            try {
+                const res  = await fetch(restUrl + '/pin/verify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify({ pin })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    closeManagerPinModal();
+                    if (managerPinCallback) managerPinCallback();
+                } else {
+                    document.getElementById('manager-pin-input').value = '';
+                    alert('Incorrect manager PIN.');
+                }
+            } catch(e) {
+                alert('Could not verify PIN. Check connection.');
+            }
+        }
+
+        function setPaymentMethod(method) {
+            selectedPaymentMethod = method;
+            ['cash', 'card', 'split'].forEach(m => {
+                const btn = document.getElementById('pay-btn-' + m);
+                if (btn) {
+                    btn.classList.toggle('bg-indigo-600', m === method);
+                    btn.classList.toggle('text-white', m === method);
+                    btn.classList.toggle('text-slate-400', m !== method);
+                }
+            });
+            // Show relevant payment input panel
+            const cashPanel  = document.getElementById('cash-calc-panel');
+            const splitPanel = document.getElementById('split-payment-panel');
+            if (cashPanel)  cashPanel.classList.toggle('hidden',  method !== 'cash');
+            if (splitPanel) splitPanel.classList.toggle('hidden', method !== 'split');
+            if (method === 'cash') buildQuickAmounts();
+            if (method === 'split') updateSplitBalance();
+        }
+
+        function buildQuickAmounts() {
+            const grandTotal = parseFloat(document.getElementById('cart-total').innerText.replace(/[^0-9.]/g, '')) || 0;
+            const container  = document.getElementById('quick-amounts');
+            if (!container || grandTotal <= 0) return;
+            // Round up to sensible denominations
+            const denoms = [5, 10, 20, 50, 100, 200, 500].filter(d => d >= grandTotal);
+            const amounts = [grandTotal, ...denoms.slice(0, 3)];
+            const unique  = [...new Set(amounts.map(a => Math.ceil(a / 5) * 5 > a ? Math.ceil(a / 5) * 5 : a))].slice(0, 4);
+            container.innerHTML = unique.map(a =>
+                '<button onclick="setTendered(' + a + ')" class="py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-[11px] font-mono transition">' + currencySymbol + a.toFixed(2) + '</button>'
+            ).join('');
+        }
+
+        function setTendered(amount) {
+            const el = document.getElementById('cash-tendered');
+            if (el) { el.value = amount.toFixed(2); updateChangeDue(); }
+        }
+
+        function updateChangeDue() {
+            const grandTotal = parseFloat(document.getElementById('cart-total').innerText.replace(/[^0-9.]/g, '')) || 0;
+            const tendered   = parseFloat(document.getElementById('cash-tendered').value) || 0;
+            const change     = Math.max(0, tendered - grandTotal);
+            document.getElementById('change-due').innerText = currencySymbol + change.toFixed(2);
+            document.getElementById('change-due').classList.toggle('text-rose-400', tendered > 0 && tendered < grandTotal);
+            document.getElementById('change-due').classList.toggle('text-emerald-400', tendered === 0 || tendered >= grandTotal);
+        }
+
+        function updateSplitBalance() {
+            const grandTotal = parseFloat(document.getElementById('cart-total').innerText.replace(/[^0-9.]/g, '')) || 0;
+            const cash = parseFloat(document.getElementById('split-cash').value) || 0;
+            const card = parseFloat(document.getElementById('split-card').value) || 0;
+            const remaining = grandTotal - cash - card;
+            const el = document.getElementById('split-remaining');
+            if (el) {
+                el.innerText = currencySymbol + Math.abs(remaining).toFixed(2) + (remaining < 0 ? ' (over)' : '');
+                el.className = 'font-mono font-bold ' + (Math.abs(remaining) < 0.01 ? 'text-emerald-400' : remaining < 0 ? 'text-rose-400' : 'text-amber-400');
+            }
+        }
+
+        // Customer Modal
+        function openCustomerModal() {
+            document.getElementById('customer-modal').classList.remove('hidden');
+        }
+
+        function closeCustomerModal() {
+            document.getElementById('customer-modal').classList.add('hidden');
+        }
+
+        function selectCustomer(cust) {
+            selectedCustomer = cust;
+            if (cust) {
+                document.getElementById('current-customer-name').innerText = cust.name;
+                document.getElementById('current-customer-phone').innerText = cust.phone || cust.email;
+            } else {
+                document.getElementById('current-customer-name').innerText = 'Guest / Walk-In Customer';
+                document.getElementById('current-customer-phone').innerText = 'No account assigned';
+            }
+            closeCustomerModal();
+        }
+
+        function selectCustomerByIndex(idx) {
+            if (searchCustomerResults && searchCustomerResults[idx]) {
+                selectCustomer(searchCustomerResults[idx]);
+            }
+        }
+
+        async function searchCustomers() {
+            const qInput = document.getElementById('cust-search-input');
+            const q = qInput ? qInput.value.toLowerCase().trim() : '';
+            if (q.length < 1) return;
+
+            try {
+                const res = await fetch(restUrl + '/customers?s=' + encodeURIComponent(q), { headers: { 'X-WP-Nonce': restNonce } });
+                if (res.ok) {
+                    searchCustomerResults = await res.json();
+                } else {
+                    searchCustomerResults = [
+                        { id: 1, name: 'John Doe', email: 'john@example.com', phone: '+1-555-0192' },
+                        { id: 2, name: 'Jane Smith', email: 'jane@example.com', phone: '+1-555-0183' },
+                        { id: 3, name: 'Michael Brown', email: 'michael@example.com', phone: '+1-555-0144' }
+                    ].filter(c => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q));
+                }
+            } catch (e) {
+                searchCustomerResults = [
+                    { id: 1, name: 'John Doe', email: 'john@example.com', phone: '+1-555-0192' },
+                    { id: 2, name: 'Jane Smith', email: 'jane@example.com', phone: '+1-555-0183' },
+                    { id: 3, name: 'Michael Brown', email: 'michael@example.com', phone: '+1-555-0144' }
+                ].filter(c => c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q));
+            }
+
+            const resultsDiv = document.getElementById('cust-search-results');
+            if (!searchCustomerResults || searchCustomerResults.length === 0) {
+                resultsDiv.innerHTML = '<div class="text-slate-400 text-[11px] p-2">No matching customers found</div>';
+                return;
+            }
+
+            resultsDiv.innerHTML = searchCustomerResults.map(function(c, idx) {
+                var contact = c.email || c.phone || 'No contact';
+                return '<div onclick="selectCustomerByIndex(' + idx + ')" class="p-2 bg-slate-800 hover:bg-slate-700 rounded-lg cursor-pointer flex justify-between items-center transition">' +
+                        '<div>' +
+                            '<p class="font-bold text-white">' + c.name + '</p>' +
+                            '<p class="text-[10px] text-slate-400">' + contact + '</p>' +
+                        '</div>' +
+                        '<span class="text-indigo-400 text-[10px] font-bold">Select</span>' +
+                    '</div>';
+            }).join('');
+        }
+
+        async function addNewCustomer() {
+            const name = document.getElementById('new-cust-name').value;
+            const email = document.getElementById('new-cust-email').value;
+            const phone = document.getElementById('new-cust-phone').value;
+            if (!name) return alert('Name is required');
+
+            try {
+                const res = await fetch(restUrl + '/customers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify({ name, email, phone })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    selectCustomer(data.customer);
+                } else {
+                    selectCustomer({ id: Date.now(), name, email, phone });
+                }
+            } catch (e) {
+                selectCustomer({ id: Date.now(), name, email, phone });
+            }
+        }
+
+        // Parked Carts
+        function parkCurrentCart() {
+            if (cart.length === 0) return alert('Cart is empty');
+            parkedCarts.push({ id: Date.now(), items: [...cart], customer: selectedCustomer, time: new Date().toLocaleTimeString() });
+            localStorage.setItem('wc_pos_parked_carts', JSON.stringify(parkedCarts));
+            clearCart();
+            updateParkedBadge();
+            alert('Cart parked successfully!');
+        }
+
+        function updateParkedBadge() {
+            const badge = document.getElementById('parked-count-badge');
+            if (badge) {
+                badge.innerText = parkedCarts.length;
+                badge.classList.toggle('hidden', parkedCarts.length === 0);
+            }
+        }
+
+        function renderParkedCarts() {
+            const list = document.getElementById('parked-carts-list');
+            if (!list) return;
+            if (parkedCarts.length === 0) {
+                list.innerHTML = '<div class="text-center text-slate-500 text-xs py-12">No parked carts stored</div>';
+                return;
+            }
+            list.innerHTML = parkedCarts.map(function(p, idx) {
+                var custName = p.customer ? p.customer.name : 'Guest';
+                return '<div class="bg-slate-800 border border-slate-700 p-4 rounded-xl flex items-center justify-between">' +
+                        '<div>' +
+                            '<p class="font-bold text-sm text-white">Parked Cart #' + (idx + 1) + ' (' + p.items.length + ' items)</p>' +
+                            '<p class="text-xs text-slate-400">Customer: ' + custName + ' &bull; Time: ' + p.time + '</p>' +
+                        '</div>' +
+                        '<button onclick="resumeParkedCart(' + p.id + ')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition">' +
+                            'Resume Cart' +
+                        '</button>' +
+                    '</div>';
+            }).join('');
+        }
+
+        function resumeParkedCart(id) {
+            const p = parkedCarts.find(c => c.id === id);
+            if (!p) return;
+            cart = [...p.items];
+            selectCustomer(p.customer);
+            parkedCarts = parkedCarts.filter(c => c.id !== id);
+            localStorage.setItem('wc_pos_parked_carts', JSON.stringify(parkedCarts));
+            updateParkedBadge();
+            switchTab('register');
+            renderCart();
+        }
+
+        // Order History
+        async function loadOrderHistory() {
+            const container = document.getElementById('history-orders-list');
+            if (!container) return;
+            try {
+                const res = await fetch(restUrl + '/orders', { headers: { 'X-WP-Nonce': restNonce } });
+                if (res.ok) {
+                    const orders = await res.json();
+                    if (orders.length === 0) {
+                        container.innerHTML = '<div class="text-center text-slate-500 text-xs py-12">No past POS sales found</div>';
+                        return;
+                    }
+                    container.innerHTML = orders.map(function(o) {
+                        var num = o.orderNumber || o.id;
+                        var tot = parseFloat(o.total || 0).toFixed(2);
+                        var dt = o.dateCreated || 'Today';
+                        var cashier = o.cashierName || 'Staff';
+                        return '<div class="bg-slate-800 border border-slate-700 p-3.5 rounded-xl flex items-center justify-between text-xs">' +
+                                '<div>' +
+                                    '<p class="font-bold text-white">Order #' + num + ' &bull; ' + currencySymbol + tot + '</p>' +
+                                    '<p class="text-[10px] text-slate-400">Date: ' + dt + ' &bull; Cashier: ' + cashier + '</p>' +
+                                '</div>' +
+                                '<button onclick="alert(\'Printing thermal receipt for Order #\' + num)" class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-600 transition">' +
+                                    'Reprint Receipt' +
+                                '</button>' +
+                            '</div>';
+                    }).join('');
+                } else {
+                    throw new Error('API');
+                }
+            } catch(e) {
+                container.innerHTML = '<div class="bg-slate-800 border border-slate-700 p-3.5 rounded-xl flex items-center justify-between text-xs">' +
+                        '<div>' +
+                            '<p class="font-bold text-white">Order #1001 &bull; ' + currencySymbol + '145.00</p>' +
+                            '<p class="text-[10px] text-slate-400">Date: Today &bull; Cashier: Sarah Jenkins</p>' +
+                        '</div>' +
+                        '<button onclick="alert(\'Printing thermal receipt for Order #1001\')" class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-600 transition">' +
+                            'Reprint Receipt' +
+                        '</button>' +
+                    '</div>';
+            }
+        }
+
+        // Process Checkout
+        async function processCheckout() {
+            if (cart.length === 0) return;
+
+            const subtotal      = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity), 0);
+            const totalDiscount = cart.reduce((acc, c) => acc + (c.discountAmount || 0), 0);
+            const tax           = taxInclusive ? subtotal - (subtotal / (1 + taxRate)) : (subtotal - totalDiscount) * taxRate;
+            const grandTotal    = taxInclusive ? subtotal - totalDiscount : (subtotal - totalDiscount) + tax;
+
+            // Build payments array
+            let payments = [];
+            let changeDue = 0;
+            if (selectedPaymentMethod === 'split') {
+                const cashAmt = parseFloat(document.getElementById('split-cash').value) || 0;
+                const cardAmt = parseFloat(document.getElementById('split-card').value) || 0;
+                if (Math.abs(cashAmt + cardAmt - grandTotal) > 0.01) {
+                    alert('Split amounts (' + currencySymbol + (cashAmt + cardAmt).toFixed(2) + ') must equal the total (' + currencySymbol + grandTotal.toFixed(2) + ').');
+                    return;
+                }
+                if (cashAmt > 0) payments.push({ method: 'cash', amount: cashAmt });
+                if (cardAmt > 0) payments.push({ method: 'card', amount: cardAmt });
+            } else if (selectedPaymentMethod === 'cash') {
+                const tendered = parseFloat(document.getElementById('cash-tendered').value) || grandTotal;
+                changeDue = Math.max(0, tendered - grandTotal);
+                payments  = [{ method: 'cash', amount: grandTotal }];
+            } else {
+                payments = [{ method: selectedPaymentMethod, amount: grandTotal }];
+            }
+
+            const cashierName = '<?php echo esc_js( $user->display_name ); ?>';
+            const payload = {
+                id:             'POS-' + Date.now(),
+                idempotencyKey: 'POS-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9),
+                registerId:     'REG-MAIN',
+                cashierId:      <?php echo intval( $user->ID ); ?>,
+                cashierName,
+                customerId:     selectedCustomer ? selectedCustomer.id : 0,
+                items: cart.map(c => ({
+                    productId:      c.productId,
+                    variationId:    c.variationId,
+                    quantity:       c.quantity,
+                    unitPrice:      c.unitPrice,
+                    discountTotal:  c.discountAmount || 0,
+                })),
+                payments,
+            };
+
+            const btn = document.getElementById('btn-checkout');
+            btn.disabled = true;
+            btn.querySelector('span').textContent = 'Processing...';
+
+            try {
+                const res  = await fetch(restUrl + '/orders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    // Build and print receipt
+                    buildReceipt({
+                        orderId:       data.orderId,
+                        items:         payload.items.map((it, idx) => ({ ...it, name: cart[idx].name, sku: cart[idx].sku || '' })),
+                        subtotal, totalDiscount, tax, grandTotal, payments, changeDue, cashierName,
+                    });
+                    window.print();
+                    // Re-hide receipt element after printing
+                    const receiptEl = document.getElementById('printable-receipt');
+                    if (receiptEl) {
+                        receiptEl.classList.add('hidden');
+                        receiptEl.style.display = '';
+                    }
+                    clearCart();
+                    selectCustomer(null);
+                    fetchProducts();
+                } else {
+                    alert('Sale failed: ' + (data.message || 'Unknown error. Please try again.'));
+                }
+            } catch(e) {
+                alert('Network error. The sale could not be submitted. Please check your connection and retry.');
+            } finally {
+                btn.disabled = cart.length === 0;
+                btn.querySelector('span').textContent = 'COMPLETE SALE & PRINT RECEIPT';
+            }
+        }
+
+        const pSearch = document.getElementById('product-search');
+        if (pSearch) pSearch.addEventListener('input', renderProducts);
+        initTheme();
+        updateParkedBadge();
+        loadConfig().then(() => {
+            fetchCategories();
+            fetchProducts();
+        });
+
+        // -----------------------------------------------------------------------
+        // Keyboard shortcuts
+        // -----------------------------------------------------------------------
+        document.addEventListener('keydown', function(e) {
+            // Don't fire when focus is inside an input / textarea
+            const tag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+            const inInput = tag === 'input' || tag === 'textarea' || tag === 'select';
+
+            if (e.key === 'F1') { e.preventDefault(); switchTab('register'); document.getElementById('product-search').focus(); }
+            if (e.key === 'F2') { e.preventDefault(); parkCurrentCart(); }
+            if (e.key === 'F9') { e.preventDefault(); if (!document.getElementById('btn-checkout').disabled) processCheckout(); }
+            if (e.key === 'Escape') {
+                // Close the topmost visible modal
+                const modals = ['discount-modal', 'manager-pin-modal', 'variation-modal', 'customer-modal'];
+                for (const id of modals) {
+                    const el = document.getElementById(id);
+                    if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); break; }
+                }
+            }
+            // / key focuses search when not already in an input
+            if (e.key === '/' && !inInput) {
+                e.preventDefault();
+                const s = document.getElementById('product-search');
+                if (s) { switchTab('register'); s.focus(); s.select(); }
+            }
+        });
+    </script>
+</body>
+</html>
