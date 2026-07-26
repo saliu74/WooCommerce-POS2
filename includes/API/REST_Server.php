@@ -209,9 +209,15 @@ class REST_Server {
             if ( $p->is_type( 'variable' ) ) {
                 foreach ( $p->get_children() as $child_id ) {
                     $v = wc_get_product( $child_id );
-                    if ( ! $v ) {
+                    if ( ! $v || ! $v->exists() ) {
                         continue;
                     }
+                    // Skip variations that are disabled/not purchasable — they
+                    // shouldn't count toward "in stock" and shouldn't be sellable at POS.
+                    if ( ! $v->is_purchasable() && ! current_user_can( 'manage_woocommerce' ) ) {
+                        continue;
+                    }
+
                     $v_img = '';
                     $v_img_id = $v->get_image_id();
                     if ( $v_img_id ) {
@@ -223,6 +229,7 @@ class REST_Server {
                     }
 
                     $v_price = (float) $v->get_price() ?: (float) $v->get_regular_price();
+                    $v_stock = $this->resolve_stock( $v );
 
                     $variations_data[] = array(
                         'id'            => $v->get_id(),
@@ -230,12 +237,20 @@ class REST_Server {
                         'sku'           => $v->get_sku(),
                         'price'         => $v_price,
                         'regularPrice'  => (float) $v->get_regular_price(),
-                        'stockQuantity' => (int) $v->get_stock_quantity(),
+                        'stockQuantity' => $v_stock['quantity'],
+                        'stockStatus'   => $v_stock['status'],
                         'attributes'    => $v->get_attributes(),
                         'imageUrl'      => $v_img,
                     );
                 }
             }
+
+            // Bug fix (#4): a variable product's own stock fields are meaningless
+            // when "Manage stock" is disabled at the parent level — the real
+            // availability lives on its variations. resolve_stock() aggregates
+            // across variations for 'variable' products and falls back to the
+            // product's own fields for everything else.
+            $stock = $this->resolve_stock( $p, $variations_data );
 
             $formatted[] = array(
                 'id'            => $p->get_id(),
@@ -244,7 +259,8 @@ class REST_Server {
                 'type'          => $p->get_type(),
                 'price'         => $price,
                 'regularPrice'  => $regular_price,
-                'stockQuantity' => (int) $p->get_stock_quantity(),
+                'stockQuantity' => $stock['quantity'],
+                'stockStatus'   => $stock['status'],
                 'imageUrl'      => $image_url,
                 'variations'    => $variations_data,
             );
@@ -253,36 +269,194 @@ class REST_Server {
         return rest_ensure_response( $formatted );
     }
 
+    /**
+     * Resolve accurate stock status/quantity for any product type.
+     *
+     * For 'variable' products, the parent's own _stock / _stock_status meta is
+     * unreliable when "Manage stock" is off at the parent (the common case) —
+     * so we aggregate across the already-formatted variation data (or, if not
+     * supplied, load the variations directly) and treat the parent as in-stock
+     * if at least one variation is in stock or carries positive quantity.
+     *
+     * @param WC_Product $product
+     * @param array|null $formatted_variations Optional pre-built variation rows
+     *                                          (each with stockQuantity/stockStatus)
+     *                                          to avoid re-querying variations.
+     * @return array{status:string, quantity:int|null}
+     */
+    private function resolve_stock( $product, $formatted_variations = null ) {
+        if ( ! $product->is_type( 'variable' ) ) {
+            return array(
+                'status'   => $product->get_stock_status() ?: 'instock',
+                'quantity' => $product->managing_stock() ? (int) $product->get_stock_quantity() : null,
+            );
+        }
+
+        // Build the variation list if the caller didn't already hand us one.
+        if ( null === $formatted_variations ) {
+            $formatted_variations = array();
+            foreach ( $product->get_children() as $child_id ) {
+                $v = wc_get_product( $child_id );
+                if ( ! $v || ! $v->exists() ) {
+                    continue;
+                }
+                $formatted_variations[] = array(
+                    'stockQuantity' => $v->managing_stock() ? (int) $v->get_stock_quantity() : null,
+                    'stockStatus'   => $v->get_stock_status(),
+                );
+            }
+        }
+
+        if ( empty( $formatted_variations ) ) {
+            return array( 'status' => 'outofstock', 'quantity' => 0 );
+        }
+
+        $total_qty        = 0;
+        $has_qty_data      = false;
+        $any_in_stock     = false;
+        $any_on_backorder = false;
+
+        foreach ( $formatted_variations as $v_row ) {
+            $qty    = $v_row['stockQuantity'];
+            $status = $v_row['stockStatus'];
+
+            if ( $qty !== null ) {
+                $has_qty_data = true;
+                $total_qty   += max( 0, (int) $qty );
+                if ( $qty > 0 ) {
+                    $any_in_stock = true;
+                }
+            } elseif ( 'instock' === $status ) {
+                $any_in_stock = true;
+            }
+
+            if ( 'onbackorder' === $status ) {
+                $any_on_backorder = true;
+            }
+        }
+
+        if ( $any_in_stock ) {
+            $status = 'instock';
+        } elseif ( $any_on_backorder ) {
+            $status = 'onbackorder';
+        } else {
+            $status = 'outofstock';
+        }
+
+        return array(
+            'status'   => $status,
+            'quantity' => $has_qty_data ? $total_qty : null,
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Customers
     // -------------------------------------------------------------------------
 
     public function get_customers( $request ) {
         $search = sanitize_text_field( $request->get_param( 's' ) ?? '' );
-        $args   = array(
+
+        $base_args = array(
             'number'   => 30,
             'orderby'  => 'display_name',
             'order'    => 'ASC',
             // Only return actual customers/subscribers — never expose admin accounts.
             'role__in' => array( 'customer', 'subscriber' ),
         );
-        if ( $search ) {
-            $args['search']         = '*' . $search . '*';
-            $args['search_columns'] = array( 'user_login', 'user_email', 'display_name' );
+
+        if ( ! $search ) {
+            $users     = get_users( $base_args );
+            $formatted = array();
+            foreach ( $users as $u ) {
+                $formatted[] = $this->format_customer_row( $u );
+            }
+            return rest_ensure_response( $formatted );
         }
 
-        $users     = get_users( $args );
+        // Bug fix (#2): the previous query passed 'display_name' into
+        // WP_User_Query's search_columns, but display_name is NOT one of the
+        // columns WP_User_Query is able to search against (only user_login,
+        // user_nicename, user_email, user_url, ID are valid) — so it was
+        // silently dropped, and first_name/last_name (which live in usermeta,
+        // not the wp_users table) were never searched at all. That let
+        // wildcard-less/incidental substring matches on login or email surface
+        // unrelated accounts (e.g. "ruth" matching something inside an
+        // autogenerated POS guest email) while genuine name matches were missed.
+        //
+        // Fix: run two explicit WP_User_Query passes — one against the real
+        // core search_columns, one against first_name/last_name meta — then
+        // merge + de-duplicate by user ID. Both use wildcarded LIKE ('*term*')
+        // so partial matches work as the cashier types.
+        $wildcard = '*' . $search . '*';
+
+        $core_args                    = $base_args;
+        $core_args['search']          = $wildcard;
+        $core_args['search_columns']  = array( 'user_login', 'user_email', 'user_nicename' );
+        $core_query                   = new \WP_User_Query( $core_args );
+
+        $meta_args               = $base_args;
+        $meta_args['meta_query'] = array(
+            'relation' => 'OR',
+            array(
+                'key'     => 'first_name',
+                'value'   => $search,
+                'compare' => 'LIKE',
+            ),
+            array(
+                'key'     => 'last_name',
+                'value'   => $search,
+                'compare' => 'LIKE',
+            ),
+        );
+        $meta_query = new \WP_User_Query( $meta_args );
+
+        // Also match directly against display_name in PHP, since WP_User_Query
+        // can't search that column at the SQL level.
+        $display_name_matches = get_users( array_merge( $base_args, array( 'fields' => 'all' ) ) );
+        $display_name_matches = array_filter( $display_name_matches, function ( $u ) use ( $search ) {
+            return false !== stripos( $u->display_name, $search );
+        } );
+
+        $merged = array();
+        foreach ( array_merge( $core_query->get_results(), $meta_query->get_results(), $display_name_matches ) as $u ) {
+            $merged[ $u->ID ] = $u;
+        }
+
+        // Relevance sort: names that start with the search term first, then
+        // alphabetical — so "Ruth Adeyemi" outranks someone who merely
+        // contains "ruth" inside an email address.
+        $merged = array_values( $merged );
+        usort( $merged, function ( $a, $b ) use ( $search ) {
+            $a_prefix = 0 === stripos( $a->display_name, $search );
+            $b_prefix = 0 === stripos( $b->display_name, $search );
+            if ( $a_prefix !== $b_prefix ) {
+                return $b_prefix <=> $a_prefix;
+            }
+            return strcasecmp( $a->display_name, $b->display_name );
+        } );
+
         $formatted = array();
-        foreach ( $users as $u ) {
-            $formatted[] = array(
-                'id'    => $u->ID,
-                'name'  => $u->display_name,
-                'email' => $u->user_email,
-                'phone' => get_user_meta( $u->ID, 'billing_phone', true ) ?: '',
-            );
+        foreach ( $merged as $u ) {
+            $formatted[] = $this->format_customer_row( $u );
         }
 
         return rest_ensure_response( $formatted );
+    }
+
+    /**
+     * Shape a WP_User object into the customer row the POS frontend expects.
+     */
+    private function format_customer_row( $u ) {
+        $first = get_user_meta( $u->ID, 'first_name', true );
+        $last  = get_user_meta( $u->ID, 'last_name', true );
+        $name  = trim( $first . ' ' . $last ) ?: $u->display_name;
+
+        return array(
+            'id'    => $u->ID,
+            'name'  => $name,
+            'email' => $u->user_email,
+            'phone' => get_user_meta( $u->ID, 'billing_phone', true ) ?: '',
+        );
     }
 
     public function create_customer( $request ) {

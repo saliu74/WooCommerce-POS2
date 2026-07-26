@@ -244,6 +244,14 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                         </div>
                     </div>
 
+                    <!-- Order Note / Terminal Reference (Bug fix #3) -->
+                    <div class="space-y-1">
+                        <label for="pos-order-note" class="text-slate-400 text-[11px]">Order Note / Terminal Reference (optional)</label>
+                        <textarea id="pos-order-note" rows="2" maxlength="1000"
+                            placeholder="e.g. Terminal ref #4471, manual card auth code..."
+                            class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                    </div>
+
                     <button onclick="processCheckout()" id="btn-checkout" disabled class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white font-extrabold text-sm rounded-xl transition shadow-lg flex items-center justify-center space-x-2">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
                         <span>COMPLETE SALE &amp; PRINT RECEIPT</span>
@@ -777,18 +785,32 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 var isVariable = p.type === 'variable';
                 var priceVal = parseFloat(p.price || p.regularPrice || p.salePrice || 0);
                 var displayPrice = isNaN(priceVal) ? '0.00' : priceVal.toFixed(2);
-                var stockQty = (p.stockQuantity !== undefined && p.stockQuantity !== null) ? p.stockQuantity : 10;
+                // Bug fix (#1/#4): trust the backend's resolved stockStatus rather
+                // than defaulting an undefined quantity to 10 (which silently
+                // treated unknown/parent-level stock as "always available").
+                // isProductOutOfStock() correctly aggregates variation stock for
+                // variable products via the stockStatus field from the API.
+                var stockQty = (p.stockQuantity !== undefined && p.stockQuantity !== null) ? p.stockQuantity : null;
+                var outOfStock = isProductOutOfStock(p);
                 var imgHtml = hasImg 
                     ? '<img src="' + p.imageUrl + '" alt="Product" class="w-full h-full object-contain group-hover:scale-105 transition duration-200" />'
                     : '<div class="text-slate-600 flex flex-col items-center"><svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg></div>';
                 var varTag = isVariable ? '<span class="absolute top-2 right-2 bg-indigo-600 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase">Variations</span>' : '';
                 var skuText = p.sku ? 'SKU: ' + p.sku : 'No SKU';
-                var stockClass = stockQty > LOW_STOCK_THRESHOLD ? 'text-slate-400' : stockQty > 0 ? 'text-amber-400 font-bold' : 'text-rose-400 font-bold';
-                var stockLabel = stockQty > LOW_STOCK_THRESHOLD ? stockQty + ' in stock' : stockQty > 0 ? '⚠ Low: ' + stockQty : '✕ Out of stock';
+                var stockClass = outOfStock ? 'text-rose-400 font-bold' : (stockQty !== null && stockQty <= LOW_STOCK_THRESHOLD) ? 'text-amber-400 font-bold' : 'text-slate-400';
+                var stockLabel = outOfStock ? '✕ Out of stock' : (stockQty !== null && stockQty <= LOW_STOCK_THRESHOLD) ? '⚠ Low: ' + stockQty : (stockQty !== null ? stockQty + ' in stock' : 'In stock');
+                var cardClasses = 'pos-card bg-slate-800/90 border rounded-xl overflow-hidden transition flex flex-col justify-between shadow-md group min-h-[220px] '
+                    + (outOfStock
+                        ? 'border-rose-900/60 opacity-50 cursor-not-allowed'
+                        : 'border-slate-700 hover:border-indigo-500 cursor-pointer hover:scale-[1.02]');
+                var clickHandler = outOfStock
+                    ? 'handleOutOfStockClick(' + p.id + ')'
+                    : 'handleProductClick(' + p.id + ')';
+                var oosBadge = outOfStock ? '<span class="absolute top-2 left-2 bg-rose-600 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded uppercase">Out of Stock</span>' : '';
 
-                return '<div onclick="handleProductClick(' + p.id + ')" class="pos-card bg-slate-800/90 border border-slate-700 hover:border-indigo-500 rounded-xl overflow-hidden cursor-pointer transition flex flex-col justify-between hover:scale-[1.02] shadow-md group min-h-[220px]">' +
+                return '<div onclick="' + clickHandler + '" class="' + cardClasses + '">' +
                         '<div class="h-28 bg-slate-900 overflow-hidden relative flex items-center justify-center p-1">' +
-                            imgHtml + varTag +
+                            imgHtml + varTag + oosBadge +
                         '</div>' +
                         '<div class="p-2.5 flex-1 flex flex-col justify-between">' +
                             '<div>' +
@@ -802,6 +824,31 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                         '</div>' +
                     '</div>';
             }).join('');
+        }
+
+        // Bug fix (#1): centralized out-of-stock check. For 'variable' products
+        // this trusts the backend-aggregated stockStatus (see resolve_stock() in
+        // REST_Server.php) rather than the parent's own — often meaningless —
+        // stock fields.
+        function isProductOutOfStock(p, variationId) {
+            if (variationId) {
+                var v = (p.variations || []).find(function(x) { return x.id === variationId; });
+                if (!v) return true; // unknown variation — fail safe as blocked
+                return v.stockStatus === 'outofstock'
+                    || (v.stockQuantity !== undefined && v.stockQuantity !== null && v.stockQuantity <= 0 && v.stockStatus !== 'onbackorder');
+            }
+            if (p.stockStatus) {
+                return p.stockStatus === 'outofstock';
+            }
+            // Fallback for any product missing stockStatus entirely (shouldn't
+            // happen with the fixed API, but never silently allow the sale).
+            return p.stockQuantity !== undefined && p.stockQuantity !== null && p.stockQuantity <= 0;
+        }
+
+        function handleOutOfStockClick(productId) {
+            var prod = products.find(function(p) { return p.id === productId; });
+            var name = prod ? prod.name : 'This item';
+            alert('"' + name + '" is out of stock and cannot be added to the cart.\n\nPlease contact the inventory manager to restock or verify availability before selling this item.');
         }
 
         function handleProductClick(productId) {
@@ -828,14 +875,27 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     var safeName = (v.name || 'Option').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
                     var vImg = v.imageUrl ? '<img src="' + v.imageUrl + '" class="w-10 h-10 object-contain bg-slate-900 rounded-lg p-0.5 border border-slate-700" />' : '';
                     var vSku = v.sku ? 'SKU: ' + v.sku : 'No SKU';
-                    var stockVal = v.stockQuantity !== undefined ? v.stockQuantity : 10;
+                    var stockVal = (v.stockQuantity !== undefined && v.stockQuantity !== null) ? v.stockQuantity : null;
+                    // Bug fix (#1): a specific variation can be out of stock even
+                    // when the parent/other variations are available — block it
+                    // individually rather than only gating at the parent level.
+                    var vOutOfStock = isProductOutOfStock(prod, v.id);
+                    var vRowClasses = vOutOfStock
+                        ? 'p-3 bg-slate-900 border border-rose-900/60 rounded-xl flex items-center justify-between space-x-3 opacity-50 cursor-not-allowed'
+                        : 'p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl cursor-pointer flex items-center justify-between transition space-x-3';
+                    var vClickHandler = vOutOfStock
+                        ? 'handleOutOfStockClick(' + v.id + ')'
+                        : "selectVariation(" + prod.id + ", " + v.id + ", '" + safeName + "', " + vPrice + ")";
+                    var vStockLabel = vOutOfStock
+                        ? '<span class="text-rose-400 font-bold">Out of stock</span>'
+                        : ('Stock: ' + (stockVal !== null ? stockVal : 'In stock'));
 
-                    return '<div onclick="selectVariation(' + prod.id + ', ' + v.id + ', \'' + safeName + '\', ' + vPrice + ')" class="p-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl cursor-pointer flex items-center justify-between transition space-x-3">' +
+                    return '<div onclick="' + vClickHandler + '" class="' + vRowClasses + '">' +
                             '<div class="flex items-center space-x-3">' +
                                 vImg +
                                 '<div>' +
                                     '<p class="text-xs font-bold text-white">' + (v.name || 'Option') + '</p>' +
-                                    '<p class="text-[10px] text-slate-400">Stock: ' + stockVal + ' &bull; ' + vSku + '</p>' +
+                                    '<p class="text-[10px] text-slate-400">' + vStockLabel + ' &bull; ' + vSku + '</p>' +
                                 '</div>' +
                             '</div>' +
                             '<span class="text-xs font-bold text-emerald-400 font-mono">' + currencySymbol + vPriceStr + '</span>' +
@@ -854,7 +914,17 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             addToCart(parentId, varName, price, varId);
         }
 
+        // Bug fix (#1): addToCart() is the single choke point every "add" path
+        // funnels through (grid click, variation modal). Re-verifying stock
+        // here — not just at render/click time — means a stale grid can never
+        // actually get an out-of-stock item into the cart; it's the hard stop.
         function addToCart(productId, name, price, variationId = 0) {
+            const prod = products.find(p => p.id === productId);
+            if (prod && isProductOutOfStock(prod, variationId || undefined)) {
+                handleOutOfStockClick(variationId || productId);
+                return;
+            }
+
             const key = productId + '_' + variationId;
             const existing = cart.find(c => c.key === key);
             if (existing) {
@@ -1336,6 +1406,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 cashierId:      <?php echo intval( $user->ID ); ?>,
                 cashierName,
                 customerId:     selectedCustomer ? selectedCustomer.id : 0,
+                orderNote:      (document.getElementById('pos-order-note').value || '').trim(),
                 items: cart.map(c => ({
                     productId:      c.productId,
                     variationId:    c.variationId,
@@ -1374,6 +1445,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     }
                     clearCart();
                     selectCustomer(null);
+                    document.getElementById('pos-order-note').value = '';
                     fetchProducts();
                 } else {
                     alert('Sale failed: ' + (data.message || 'Unknown error. Please try again.'));

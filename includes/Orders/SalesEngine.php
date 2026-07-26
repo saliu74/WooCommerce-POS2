@@ -11,6 +11,23 @@ class SalesEngine {
 
     public static function init_hooks() {
         add_action( 'woocommerce_order_status_completed', array( __CLASS__, 'on_order_completed' ) );
+
+        // Bug fix (#3): surface the POS terminal reference on the admin order
+        // screen so office staff can see it without digging through order meta.
+        add_action( 'woocommerce_admin_order_data_after_billing_address', array( __CLASS__, 'render_terminal_reference_admin' ) );
+    }
+
+    /**
+     * Show the captured POS terminal/payment reference on the wp-admin order
+     * edit screen, just under the billing address block.
+     *
+     * @param \WC_Order $order
+     */
+    public static function render_terminal_reference_admin( $order ) {
+        $ref = $order->get_meta( '_wc_pos_terminal_reference' );
+        if ( $ref ) {
+            echo '<p><strong>' . esc_html__( 'POS Terminal Reference:', 'wc-pos-pro' ) . '</strong><br>' . esc_html( $ref ) . '</p>';
+        }
     }
 
     public static function create_pos_order( $payload ) {
@@ -58,6 +75,66 @@ class SalesEngine {
             if ( ! empty( $existing_orders ) ) {
                 return $existing_orders[0];
             }
+        }
+
+        // --- Bug fix (#1): hard stop on out-of-stock items BEFORE any order is
+        // created. Previously, stock was only checked inside
+        // Inventory::reduce_stock_atomic() *after* wc_create_order() already
+        // ran, which meant every rejected sale left behind a cancelled order
+        // record, and the check only looked at quantity — never at an
+        // explicitly-set 'outofstock' stock_status. This checks both, for
+        // every line item, and rejects the whole order up front if any item
+        // fails, with no order created and no stock touched.
+        $stock_check_errors = array();
+        foreach ( $payload['items'] as $item_data ) {
+            $product_id   = intval( $item_data['productId'] );
+            $variation_id = intval( $item_data['variationId'] ?? 0 );
+            $target_id    = $variation_id ? $variation_id : $product_id;
+            $quantity     = intval( $item_data['quantity'] ?? 0 );
+
+            $product = wc_get_product( $target_id );
+            if ( ! $product ) {
+                $stock_check_errors[] = sprintf(
+                    __( 'Product ID %d could not be found.', 'wc-pos-pro' ),
+                    $target_id
+                );
+                continue;
+            }
+
+            // Explicit stock_status check — catches items manually marked
+            // "Out of stock" even if a stale _stock quantity is still positive.
+            if ( 'outofstock' === $product->get_stock_status() ) {
+                $stock_check_errors[] = sprintf(
+                    __( '"%1$s" is out of stock. Contact the inventory manager before selling this item.', 'wc-pos-pro' ),
+                    $product->get_name()
+                );
+                continue;
+            }
+
+            if ( 'onbackorder' === $product->get_stock_status() && ! $product->backorders_allowed() ) {
+                $stock_check_errors[] = sprintf(
+                    __( '"%1$s" is on backorder and cannot be sold at POS.', 'wc-pos-pro' ),
+                    $product->get_name()
+                );
+                continue;
+            }
+
+            // Quantity check for stock-managed products.
+            if ( $product->managing_stock() && ! $product->backorders_allowed() ) {
+                $available = $product->get_stock_quantity();
+                if ( $available === null || $available < $quantity ) {
+                    $stock_check_errors[] = sprintf(
+                        __( '"%1$s" has insufficient stock. Available: %2$d, Requested: %3$d.', 'wc-pos-pro' ),
+                        $product->get_name(),
+                        (int) $available,
+                        $quantity
+                    );
+                }
+            }
+        }
+
+        if ( ! empty( $stock_check_errors ) ) {
+            return new \WP_Error( 'out_of_stock', implode( ' | ', $stock_check_errors ) );
         }
 
         $order = wc_create_order( array(
@@ -133,6 +210,21 @@ class SalesEngine {
         $order->update_meta_data( '_wc_pos_payments',       $payload['payments'] ?? array() );
         $order->update_meta_data( '_wc_pos_idempotency_key', $idempotency_key );
 
+        // --- Bug fix (#3): capture the cashier's order note / terminal reference ---
+        // Stored three ways so it's visible wherever staff might look for it:
+        //  1. customer_note   — shows in the standard "Customer provided note" box
+        //                       on the admin order screen and in order emails.
+        //  2. _wc_pos_terminal_reference meta — queryable/reportable independent
+        //                       of customer_note, and won't be clobbered if a
+        //                       genuine customer note is ever added separately.
+        //  3. An internal (non-customer-facing) order note in the activity log,
+        //                       timestamped, for an audit trail.
+        $order_note = isset( $payload['orderNote'] ) ? sanitize_textarea_field( $payload['orderNote'] ) : '';
+        if ( '' !== $order_note ) {
+            $order->set_customer_note( $order_note );
+            $order->update_meta_data( '_wc_pos_terminal_reference', $order_note );
+        }
+
         $order->set_payment_method( 'wc_pos_custom' );
         $order->set_payment_method_title( __( 'POS In-Person Payment', 'wc-pos-pro' ) );
         $order->calculate_totals();
@@ -172,6 +264,19 @@ class SalesEngine {
                 $register_id
             )
         );
+
+        $terminal_reference = $order->get_meta( '_wc_pos_terminal_reference' );
+        if ( $terminal_reference ) {
+            $order->add_order_note(
+                sprintf(
+                    /* translators: %s: cashier-entered note/terminal reference */
+                    __( 'POS terminal/payment reference recorded: %s', 'wc-pos-pro' ),
+                    $terminal_reference
+                ),
+                0,     // private/internal note, not emailed to the customer
+                false
+            );
+        }
 
         /**
          * Fires after a POS order is completed.
