@@ -704,6 +704,24 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             }
         }
 
+        // Bug fix: previously branchPickerBranches only got populated when the
+        // picker modal was actually opened. On a returning session (branch
+        // already remembered from localStorage), the picker never opens, so
+        // this stayed an empty array all session — meaning the header label
+        // could never resolve a branch NAME and always fell back to showing
+        // the raw ID instead (e.g. "default" or "br_gKsdCZ4HKQAR"). This is
+        // now called unconditionally on every load.
+        async function loadBranchesList() {
+            try {
+                const res = await fetch(restUrl + '/branches', { headers: { 'X-WP-Nonce': restNonce } });
+                const json = await res.json();
+                branchPickerBranches = (json && json.data) ? json.data.filter(b => b.status === 'active') : [];
+            } catch (e) {
+                branchPickerBranches = [];
+            }
+            updateBranchRegisterLabel();
+        }
+
         async function openBranchPicker() {
             const errorBox = document.getElementById('branch-picker-error');
             errorBox.classList.add('hidden');
@@ -712,13 +730,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const branchSelect = document.getElementById('branch-picker-select');
             branchSelect.innerHTML = '<option value="">Loading branches...</option>';
 
-            try {
-                const res = await fetch(restUrl + '/branches', { headers: { 'X-WP-Nonce': restNonce } });
-                const json = await res.json();
-                branchPickerBranches = (json && json.data) ? json.data.filter(b => b.status === 'active') : [];
-            } catch (e) {
-                branchPickerBranches = [];
-            }
+            await loadBranchesList();
 
             if (branchPickerBranches.length === 0) {
                 branchSelect.innerHTML = '<option value="">No active branches found</option>';
@@ -800,14 +812,43 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 return;
             }
 
+            let registers = null;
             try {
                 const res = await fetch(restUrl + '/registers?branchId=' + encodeURIComponent(currentBranchId), { headers: { 'X-WP-Nonce': restNonce } });
-                const registers = await res.json();
-                const reg = Array.isArray(registers) ? registers.find(r => r.id === currentRegisterId) : null;
-                currentShiftStatus = reg ? reg.status : null;
+                registers = await res.json();
             } catch (e) {
+                // Network/parse failure — leave the stored selection alone
+                // and just show an unknown state; don't treat a transient
+                // error as proof the register doesn't exist.
                 currentShiftStatus = null;
+                updateShiftIndicator();
+                return;
             }
+
+            const reg = Array.isArray(registers) ? registers.find(r => r.id === currentRegisterId) : null;
+
+            // Bug fix: a remembered branch/register pairing that no longer
+            // corresponds to a real register (e.g. left over from earlier
+            // testing, or the register was deleted/reassigned) previously
+            // failed silently — the indicator would just show an ambiguous
+            // state, and every action after that point (checkout, shift
+            // open/close) was silently operating on a nonexistent register.
+            // Detected explicitly now, but only once we've confirmed a real
+            // response actually came back without that register in it —
+            // clear the stale selection and require picking a real one again.
+            if (!reg) {
+                localStorage.removeItem('wc_pos_branch_id');
+                localStorage.removeItem('wc_pos_register_id');
+                currentBranchId = '';
+                currentRegisterId = '';
+                currentShiftStatus = null;
+                updateBranchRegisterLabel();
+                indicator.classList.add('hidden');
+                openBranchPicker();
+                return;
+            }
+
+            currentShiftStatus = reg.status;
 
             updateShiftIndicator();
         }
@@ -1925,6 +1966,12 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         initTheme();
         updateParkedBadge();
         updateBranchRegisterLabel();
+        // Bug fix: fetch the branches list on every load (not only when the
+        // picker is opened) so the header can resolve a real branch NAME
+        // instead of falling back to the raw ID — this was the visible
+        // symptom of a deeper problem: a remembered branch/register that no
+        // longer matches what's actually selected.
+        loadBranchesList();
         loadConfig().then(() => {
             fetchCategories();
             fetchProducts();

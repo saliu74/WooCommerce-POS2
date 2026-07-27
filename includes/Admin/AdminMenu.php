@@ -27,6 +27,7 @@ class AdminMenu {
         add_action( 'wp_ajax_wc_pos_delete_branch', array( $this, 'ajax_delete_branch' ) );
         add_action( 'wp_ajax_wc_pos_save_register', array( $this, 'ajax_save_register' ) );
         add_action( 'wp_ajax_wc_pos_delete_register', array( $this, 'ajax_delete_register' ) );
+        add_action( 'wp_ajax_wc_pos_force_close_shift', array( $this, 'ajax_force_close_shift' ) );
         // Per-branch stock allocation.
         add_action( 'wp_ajax_wc_pos_search_products_for_stock', array( $this, 'ajax_search_products_for_stock' ) );
         add_action( 'wp_ajax_wc_pos_save_branch_stock', array( $this, 'ajax_save_branch_stock' ) );
@@ -285,6 +286,98 @@ class AdminMenu {
         }
 
         $wpdb->delete( $wpdb->prefix . 'wc_pos_registers', array( 'id' => $id ) );
+        wp_send_json_success();
+    }
+
+    /**
+     * Force-close a stuck/orphaned active shift directly from wp-admin,
+     * bypassing the terminal entirely. No actual-cash count is available
+     * here (this is an admin recovery action, not a normal shift close), so
+     * the reconciliation fields are left null/unknown rather than fabricating
+     * a false "zero difference" — the sales totals are still computed
+     * accurately so the record isn't blank, just its cash-count fields.
+     */
+    public function ajax_force_close_shift() {
+        check_ajax_referer( 'wc_pos_register_nonce', 'nonce' );
+        if ( ! current_user_can( 'manage_wc_pos_branches' ) && ! current_user_can( 'manage_woocommerce' ) ) {
+            wp_send_json_error( 'Unauthorized' );
+        }
+        global $wpdb;
+
+        $register_id  = sanitize_text_field( $_POST['register_id'] ?? '' );
+        $shifts_table = $wpdb->prefix . 'wc_pos_shifts';
+
+        $shift = $wpdb->get_row( $wpdb->prepare(
+            "SELECT * FROM {$shifts_table} WHERE register_id = %s AND status = 'active' LIMIT 1",
+            $register_id
+        ) );
+
+        if ( ! $shift ) {
+            wp_send_json_error( __( 'No active shift found on this register — it may already be closed.', 'wc-pos-pro' ) );
+        }
+
+        $orders = wc_get_orders( array(
+            'created_via' => 'wc_pos_pro',
+            'date_after'  => $shift->opened_at,
+            'status'      => array( 'wc-processing', 'wc-completed' ),
+            'meta_key'    => '_wc_pos_register_id',
+            'meta_value'  => $register_id,
+            'limit'       => -1,
+        ) );
+
+        $total_sales = 0;
+        $cash_sales  = 0;
+        $card_sales  = 0;
+        foreach ( $orders as $order ) {
+            $total_sales += (float) $order->get_total();
+            $payments = $order->get_meta( '_wc_pos_payments' );
+            if ( is_array( $payments ) ) {
+                foreach ( $payments as $payment ) {
+                    $amount = floatval( $payment['amount'] ?? 0 );
+                    if ( 'cash' === ( $payment['method'] ?? '' ) ) {
+                        $cash_sales += $amount;
+                    } elseif ( 'card' === ( $payment['method'] ?? '' ) ) {
+                        $card_sales += $amount;
+                    }
+                }
+            }
+        }
+        $expected_cash = floatval( $shift->opening_float ) + $cash_sales;
+
+        $result1 = $wpdb->update(
+            $shifts_table,
+            array(
+                'closed_at'       => current_time( 'mysql', true ),
+                'actual_cash'     => null,
+                'expected_cash'   => $expected_cash,
+                'cash_difference' => null,
+                'total_sales'     => $total_sales,
+                'cash_sales'      => $cash_sales,
+                'card_sales'      => $card_sales,
+                'status'          => 'closed',
+                'closing_notes'   => sprintf(
+                    /* translators: %s: admin display name */
+                    __( 'Force-closed from wp-admin by %s — no cash count recorded.', 'wc-pos-pro' ),
+                    wp_get_current_user()->display_name
+                ),
+            ),
+            array( 'id' => $shift->id ),
+            array( '%s', '%s', '%f', '%s', '%f', '%f', '%f', '%s', '%s' ),
+            array( '%s' )
+        );
+
+        $result2 = $wpdb->update(
+            $wpdb->prefix . 'wc_pos_registers',
+            array( 'status' => 'closed', 'current_shift_id' => null ),
+            array( 'id' => $register_id ),
+            array( '%s', '%s' ),
+            array( '%s' )
+        );
+
+        if ( false === $result1 || false === $result2 ) {
+            wp_send_json_error( 'Database error: ' . $wpdb->last_error );
+        }
+
         wp_send_json_success();
     }
 
@@ -579,8 +672,15 @@ class AdminMenu {
         $out          = array();
 
         foreach ( $rows as $r ) {
-            $diff  = (float) $r->cash_difference;
-            $out[] = array(
+            // Bug fix / feature: a force-closed shift (see Force Close Shift
+            // in POS > Registers) has no real cash count — actual_cash and
+            // cash_difference are stored as NULL, not 0.00, specifically so
+            // this can be told apart from a normal shift that reconciled
+            // exactly. Surface that distinction here rather than casting
+            // null to 0.0 and showing it identically to a perfect count.
+            $force_closed = null === $r->actual_cash;
+            $diff         = $force_closed ? null : (float) $r->cash_difference;
+            $out[]        = array(
                 'id'             => $r->id,
                 'registerId'     => $r->register_id,
                 'branchName'     => $branch_names[ $r->branch_id ] ?? $r->branch_id,
@@ -592,13 +692,17 @@ class AdminMenu {
                 'cashSales'      => (float) $r->cash_sales,
                 'cardSales'      => (float) $r->card_sales,
                 'expectedCash'   => (float) $r->expected_cash,
-                'actualCash'     => (float) $r->actual_cash,
+                'actualCash'     => $force_closed ? null : (float) $r->actual_cash,
                 'cashDifference' => $diff,
+                'forceClosed'    => $force_closed,
                 'status'         => $r->status,
                 // Flagged whenever the counted cash doesn't match what was
                 // expected — a closed shift with a nonzero difference is
-                // exactly what a manager needs to spot at a glance.
-                'flagged'        => 'closed' === $r->status && abs( $diff ) > 0.01,
+                // exactly what a manager needs to spot at a glance. A
+                // force-closed shift has no real count to compare, so it's
+                // never flagged as a cash discrepancy (that would be a false
+                // positive) — it's called out separately via forceClosed.
+                'flagged'        => ! $force_closed && 'closed' === $r->status && abs( $diff ) > 0.01,
             );
         }
 
@@ -1211,6 +1315,9 @@ class AdminMenu {
                             <td>
                                 <button class="button button-small" onclick="posEditRegister(<?php echo esc_js( json_encode( $r ) ); ?>)"><?php esc_html_e( 'Edit', 'wc-pos-pro' ); ?></button>
                                 <button class="button button-small" style="color:#c00;" onclick="posDeleteRegister('<?php echo esc_js( $r->id ); ?>')"><?php esc_html_e( 'Delete', 'wc-pos-pro' ); ?></button>
+                                <?php if ( 'open' === $r->status ) : ?>
+                                <button class="button button-small" style="color:#b45309;" onclick="posForceCloseShift('<?php echo esc_js( $r->id ); ?>')" title="<?php esc_attr_e( 'Use this if a shift is stuck open and cannot be closed normally from the terminal.', 'wc-pos-pro' ); ?>"><?php esc_html_e( 'Force Close Shift', 'wc-pos-pro' ); ?></button>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; endif; ?>
@@ -1297,6 +1404,15 @@ class AdminMenu {
                 if (!d) return;
                 if (d.success) { const row = document.getElementById('register-row-' + id); if (row) row.remove(); }
                 else { alert(d.data || '<?php echo esc_js( __( 'Error deleting register.', 'wc-pos-pro' ) ); ?>'); }
+            });
+        }
+
+        function posForceCloseShift(registerId) {
+            if (!confirm('<?php echo esc_js( __( 'Force close the active shift on this register? No cash count will be recorded for it — only use this if the shift is stuck and cannot be closed normally from the terminal.', 'wc-pos-pro' ) ); ?>')) return;
+            const body = new URLSearchParams({ action: 'wc_pos_force_close_shift', nonce: posRegisterNonce, register_id: registerId });
+            posAjaxRequest(posRegisterAjaxUrl, body).then(d => {
+                if (!d) return;
+                if (d.success) { location.reload(); } else { alert(d.data || '<?php echo esc_js( __( 'Error force-closing shift.', 'wc-pos-pro' ) ); ?>'); }
             });
         }
         </script>
@@ -1732,6 +1848,9 @@ class AdminMenu {
                 '</tr></thead><tbody>';
             rows.forEach(r => {
                 const diffColor = r.flagged ? 'color:#d63638;font-weight:700;' : '';
+                const actualCashDisplay = r.forceClosed ? '<em style="color:#996800;">Not counted</em>' : posFmt(r.actualCash);
+                const diffDisplay = r.forceClosed ? '<em style="color:#996800;">&mdash;</em>' : (posFmt(r.cashDifference) + (r.flagged ? ' \u26a0' : ''));
+                const statusDisplay = r.status + (r.forceClosed ? ' <span style="color:#996800;font-size:11px;">(force-closed)</span>' : '');
                 html += '<tr' + (r.flagged ? ' style="background:#fcf0f1;"' : '') + '>' +
                     '<td>' + r.registerId + '</td>' +
                     '<td>' + r.branchName + '</td>' +
@@ -1741,9 +1860,9 @@ class AdminMenu {
                     '<td>' + posFmt(r.openingFloat) + '</td>' +
                     '<td>' + posFmt(r.totalSales) + '</td>' +
                     '<td>' + posFmt(r.expectedCash) + '</td>' +
-                    '<td>' + posFmt(r.actualCash) + '</td>' +
-                    '<td style="' + diffColor + '">' + posFmt(r.cashDifference) + (r.flagged ? ' \u26a0' : '') + '</td>' +
-                    '<td>' + r.status + '</td>' +
+                    '<td>' + actualCashDisplay + '</td>' +
+                    '<td style="' + diffColor + '">' + diffDisplay + '</td>' +
+                    '<td>' + statusDisplay + '</td>' +
                 '</tr>';
             });
             html += '</tbody></table>';
