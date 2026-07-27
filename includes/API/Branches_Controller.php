@@ -16,9 +16,19 @@ class Branches_Controller extends WP_REST_Controller {
     protected $namespace = 'wc-pos/v1';
     protected $rest_base = 'branches';
 
+    /**
+     * Bug fix: previously called register_routes() immediately, rather than
+     * hooking into 'rest_api_init' the way REST_Server.php correctly does.
+     * That happened to work by accident of plugins_loaded firing before
+     * rest_api_init on every request, but it's not the documented/safe
+     * pattern — register_rest_route() is only guaranteed to behave correctly
+     * when called from a rest_api_init callback.
+     */
     public static function init() {
-        $controller = new self();
-        $controller->register_routes();
+        add_action( 'rest_api_init', function () {
+            $controller = new self();
+            $controller->register_routes();
+        } );
     }
 
     public function register_routes() {
@@ -75,11 +85,15 @@ class Branches_Controller extends WP_REST_Controller {
     }
 
     public function get_items_permissions_check( $request ) {
-        return current_user_can( 'read_private_shop_orders' ) || current_user_can( 'manage_woocommerce' );
+        return current_user_can( 'process_wc_pos_sales' )
+            || current_user_can( 'read_private_shop_orders' )
+            || current_user_can( 'manage_woocommerce' );
     }
 
     public function create_item_permissions_check( $request ) {
-        return current_user_can( 'manage_woocommerce' );
+        // Wire up the previously-unused 'manage_wc_pos_branches' capability
+        // as an alternative to full 'manage_woocommerce'.
+        return current_user_can( 'manage_wc_pos_branches' ) || current_user_can( 'manage_woocommerce' );
     }
 
     /**
@@ -140,6 +154,14 @@ class Branches_Controller extends WP_REST_Controller {
         $id = 'br_' . wp_generate_password( 12, false );
         $table = $wpdb->prefix . 'wc_pos_branches';
 
+        // Bug fix: restrict status to known values rather than accepting any
+        // arbitrary string, which would silently break admin UI status
+        // filters/badges built against a fixed set of statuses.
+        $status = sanitize_text_field( $request->get_param( 'status' ) ?? 'active' );
+        if ( ! in_array( $status, array( 'active', 'inactive' ), true ) ) {
+            $status = 'active';
+        }
+
         $data = array(
             'id'             => $id,
             'name'           => $name,
@@ -149,7 +171,7 @@ class Branches_Controller extends WP_REST_Controller {
             'email'          => sanitize_email( $request->get_param( 'email' ) ?? '' ),
             'receipt_header' => sanitize_textarea_field( $request->get_param( 'receipt_header' ) ?? '' ),
             'receipt_footer' => sanitize_textarea_field( $request->get_param( 'receipt_footer' ) ?? '' ),
-            'status'         => sanitize_text_field( $request->get_param( 'status' ) ?? 'active' ),
+            'status'         => $status,
         );
 
         $inserted = $wpdb->insert( $table, $data );
@@ -177,14 +199,31 @@ class Branches_Controller extends WP_REST_Controller {
             return new WP_Error( 'wc_pos_branch_not_found', __( 'Branch not found.', 'wc-pos-pro' ), array( 'status' => 404 ) );
         }
 
-        $fields = array( 'name', 'code', 'address', 'phone', 'email', 'receipt_header', 'receipt_footer', 'status' );
+        // Bug fix: every field was being run through sanitize_textarea_field(),
+        // even single-line fields like name/code/phone/status — harmless in
+        // practice (textarea sanitization is a superset of text-field
+        // sanitization for these values) but not the right function, and
+        // 'status' had no validation against known values at all.
+        $single_line_fields = array( 'name', 'code', 'phone', 'status' );
+        $textarea_fields    = array( 'address', 'receipt_header', 'receipt_footer' );
         $data = array();
 
-        foreach ( $fields as $field ) {
+        foreach ( $single_line_fields as $field ) {
             if ( $request->has_param( $field ) ) {
-                $value = $request->get_param( $field );
-                $data[ $field ] = ( $field === 'email' ) ? sanitize_email( $value ) : sanitize_textarea_field( $value );
+                $value = sanitize_text_field( $request->get_param( $field ) );
+                if ( 'status' === $field && ! in_array( $value, array( 'active', 'inactive' ), true ) ) {
+                    continue; // ignore invalid status rather than silently storing garbage
+                }
+                $data[ $field ] = $value;
             }
+        }
+        foreach ( $textarea_fields as $field ) {
+            if ( $request->has_param( $field ) ) {
+                $data[ $field ] = sanitize_textarea_field( $request->get_param( $field ) );
+            }
+        }
+        if ( $request->has_param( 'email' ) ) {
+            $data['email'] = sanitize_email( $request->get_param( 'email' ) );
         }
 
         if ( ! empty( $data ) ) {

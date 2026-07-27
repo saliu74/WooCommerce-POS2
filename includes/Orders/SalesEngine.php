@@ -10,7 +10,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 class SalesEngine {
 
     public static function init_hooks() {
-        add_action( 'woocommerce_order_status_completed', array( __CLASS__, 'on_order_completed' ) );
+        // Orders now land in "processing" rather than auto-completing (see
+        // create_pos_order()), so the post-sale note/hook fires on that
+        // transition instead of on "completed".
+        add_action( 'woocommerce_order_status_processing', array( __CLASS__, 'on_order_reached_processing' ) );
 
         // Bug fix (#3): surface the POS terminal reference on the admin order
         // screen so office staff can see it without digging through order meta.
@@ -31,6 +34,12 @@ class SalesEngine {
     }
 
     public static function create_pos_order( $payload ) {
+        // Multi-branch feature build-out: which branch this sale belongs to.
+        // Defaults to the seeded "default" branch so existing single-location
+        // callers (or any request sent before the frontend has a branch
+        // selector) keep working unchanged.
+        $branch_id = sanitize_text_field( $payload['branchId'] ?? 'default' );
+
         // --- Input validation ---
         if ( empty( $payload['items'] ) || ! is_array( $payload['items'] ) ) {
             return new \WP_Error( 'empty_cart', __( 'Cannot process order with empty items list.', 'wc-pos-pro' ) );
@@ -129,12 +138,43 @@ class SalesEngine {
                         (int) $available,
                         $quantity
                     );
+                    continue;
                 }
+            }
+
+            // Multi-branch: if this product has branch-specific stock
+            // allocated, also pre-check that count. This is an early,
+            // non-locking estimate for a fast fail/good error message —
+            // Inventory::reduce_stock_atomic() below still does the
+            // authoritative, row-locked check at deduction time, so a race
+            // between this check and the actual sale can't oversell.
+            $branch_check = self::check_branch_stock( $product, $branch_id, $quantity );
+            if ( is_wp_error( $branch_check ) ) {
+                $stock_check_errors[] = $branch_check->get_error_message();
             }
         }
 
         if ( ! empty( $stock_check_errors ) ) {
             return new \WP_Error( 'out_of_stock', implode( ' | ', $stock_check_errors ) );
+        }
+
+        // --- Enforce an open register shift before allowing any sale ---
+        $register_id = sanitize_text_field( $payload['registerId'] ?? 'REG-MAIN' );
+        $shift_check = self::require_open_shift( $register_id );
+        if ( is_wp_error( $shift_check ) ) {
+            return $shift_check;
+        }
+
+        // --- Server-side discount authorization ---
+        // Any non-zero discount requires the account processing the sale to
+        // hold 'override_wc_pos_prices' (or 'manage_woocommerce'). The
+        // terminal's "manager PIN" confirmation is a UI friction step for the
+        // currently logged-in account — it does not establish a separate
+        // manager identity — so the real authorization boundary has to be
+        // this capability check, not the PIN alone.
+        $discount_check = self::check_discount_authorization( $payload['items'] );
+        if ( is_wp_error( $discount_check ) ) {
+            return $discount_check;
         }
 
         $order = wc_create_order( array(
@@ -180,7 +220,9 @@ class SalesEngine {
                 sanitize_text_field( $payload['id'] ?? ( 'ORD-' . $order->get_id() ) ),
                 intval( $payload['cashierId'] ?? 0 ),
                 sanitize_text_field( $payload['cashierName'] ?? 'POS' ),
-                sanitize_text_field( $payload['registerId'] ?? 'REG-MAIN' )
+                sanitize_text_field( $payload['registerId'] ?? 'REG-MAIN' ),
+                'POS Sale',
+                $branch_id
             );
 
             if ( is_wp_error( $stock_result ) ) {
@@ -205,6 +247,7 @@ class SalesEngine {
         // --- Attach POS metadata ---
         $order->update_meta_data( '_wc_pos_order_id',       sanitize_text_field( $payload['id'] ?? '' ) );
         $order->update_meta_data( '_wc_pos_register_id',    sanitize_text_field( $payload['registerId'] ?? '' ) );
+        $order->update_meta_data( '_wc_pos_branch_id',      $branch_id );
         $order->update_meta_data( '_wc_pos_cashier_id',     intval( $payload['cashierId'] ?? 0 ) );
         $order->update_meta_data( '_wc_pos_cashier_name',   sanitize_text_field( $payload['cashierName'] ?? '' ) );
         $order->update_meta_data( '_wc_pos_payments',       $payload['payments'] ?? array() );
@@ -230,7 +273,10 @@ class SalesEngine {
         $order->calculate_totals();
 
         // Mark completed only after stock is confirmed deducted.
-        $order->update_status( 'completed' );
+        // Move to "processing" (not "completed") once stock is confirmed
+        // deducted. Completing automatically skipped the normal fulfillment/
+        // review step office staff expect to see orders pass through.
+        $order->update_status( 'processing' );
         $order->save();
 
         do_action( 'wc_pos_order_created', $order->get_id(), $payload );
@@ -239,10 +285,121 @@ class SalesEngine {
     }
 
     /**
-     * Fires when a POS order reaches "completed" status.
+     * Multi-branch feature build-out: lightweight, non-locking pre-check of a
+     * product's branch-specific stock allocation (wc_pos_branch_stock), used
+     * only to fail fast with a clear error before an order is even created.
+     * Products with no branch allocation for this branch are treated as
+     * "not branch-tracked" and skip this check entirely — they're covered by
+     * the existing global stock check already run in create_pos_order().
+     * The authoritative, row-locked check happens later in
+     * Inventory::reduce_stock_atomic(); this can't itself cause overselling
+     * even if stock changes between this check and that one.
+     */
+    private static function check_branch_stock( $product, $branch_id, $quantity ) {
+        global $wpdb;
+
+        if ( ! $branch_id || ! $product->managing_stock() || $product->backorders_allowed() ) {
+            return true;
+        }
+
+        $is_variation = $product->is_type( 'variation' );
+        $bs_product_id   = $is_variation ? $product->get_parent_id() : $product->get_id();
+        $bs_variation_id = $is_variation ? $product->get_id() : 0;
+
+        $table = $wpdb->prefix . 'wc_pos_branch_stock';
+        $row   = $wpdb->get_row( $wpdb->prepare(
+            "SELECT stock_quantity FROM {$table} WHERE branch_id = %s AND product_id = %d AND variation_id = %d",
+            $branch_id, $bs_product_id, $bs_variation_id
+        ) );
+
+        // No row = this product hasn't been allocated per-branch stock yet;
+        // nothing further to check here.
+        if ( ! $row ) {
+            return true;
+        }
+
+        if ( (int) $row->stock_quantity < $quantity ) {
+            return new \WP_Error(
+                'insufficient_branch_stock',
+                sprintf(
+                    /* translators: 1: product name, 2: available branch stock, 3: requested quantity */
+                    __( '"%1$s" has insufficient stock at this branch. Available: %2$d, Requested: %3$d.', 'wc-pos-pro' ),
+                    $product->get_name(),
+                    (int) $row->stock_quantity,
+                    $quantity
+                )
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Hard stop: reject the sale if this register has no active shift.
+     * Enforced server-side so it can't be bypassed by a stale frontend state.
+     */
+    private static function require_open_shift( $register_id ) {
+        global $wpdb;
+
+        $shifts_table = $wpdb->prefix . 'wc_pos_shifts';
+        $open_shift   = $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM {$shifts_table} WHERE register_id = %s AND status = 'active' LIMIT 1",
+            $register_id
+        ) );
+
+        if ( ! $open_shift ) {
+            return new \WP_Error(
+                'shift_not_open',
+                __( 'This register does not have an open shift. Open a shift before processing sales.', 'wc-pos-pro' )
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Reject the order if any line item carries a discount and the account
+     * processing the sale isn't authorized to apply one.
+     *
+     * Note on the authorization model: the terminal's "manager PIN" prompt
+     * verifies the currently logged-in account's own PIN — it does not
+     * establish a separate manager identity on a shared-login terminal. The
+     * real authorization boundary is therefore this capability check against
+     * whichever WordPress account the terminal is logged in as, with the PIN
+     * step serving as deliberate-intent friction on top of it. Granting a
+     * distinct manager their own login (rather than sharing the terminal's
+     * account) is the way to get true per-person authorization; that's a
+     * bigger change than this capability wiring and isn't done here.
+     */
+    private static function check_discount_authorization( $items ) {
+        $has_discount = false;
+        foreach ( $items as $item_data ) {
+            if ( floatval( $item_data['discountTotal'] ?? 0 ) > 0 ) {
+                $has_discount = true;
+                break;
+            }
+        }
+
+        if ( ! $has_discount ) {
+            return true;
+        }
+
+        if ( ! current_user_can( 'override_wc_pos_prices' ) && ! current_user_can( 'manage_woocommerce' ) ) {
+            return new \WP_Error(
+                'discount_not_authorized',
+                __( 'This account is not authorized to apply discounts. Ask a manager to log in or grant the override_wc_pos_prices capability.', 'wc-pos-pro' )
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Fires when a POS order reaches "processing" status (POS orders no
+     * longer auto-complete — see create_pos_order()).
      * Adds a timestamped order note and lets third-party code hook in.
      */
-    public static function on_order_completed( $order_id ) {
+    public static function on_order_reached_processing( $order_id ) {
         $order = wc_get_order( $order_id );
         if ( ! $order ) {
             return;
@@ -259,7 +416,7 @@ class SalesEngine {
         $order->add_order_note(
             sprintf(
                 /* translators: 1: cashier name, 2: register ID */
-                __( 'POS sale completed by %1$s on register %2$s.', 'wc-pos-pro' ),
+                __( 'POS sale processed by %1$s on register %2$s.', 'wc-pos-pro' ),
                 $cashier_name,
                 $register_id
             )
@@ -279,7 +436,9 @@ class SalesEngine {
         }
 
         /**
-         * Fires after a POS order is completed.
+         * Fires once a POS order reaches "processing" (stock deducted, sale
+         * finalized). Hook name kept as wc_pos_sale_completed for backwards
+         * compatibility with any existing integrations built against it.
          *
          * @param int      $order_id     WooCommerce order ID.
          * @param WC_Order $order        Order object.

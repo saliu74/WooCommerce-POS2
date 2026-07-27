@@ -17,8 +17,26 @@ class Inventory {
     /**
      * Atomically reduces product stock with database row locking.
      * Prevents race conditions during simultaneous sales.
+     *
+     * @param int         $product_id   Product or variation ID being sold.
+     * @param int         $quantity     Quantity sold.
+     * @param string      $order_id     POS/WC order reference for the audit log.
+     * @param int         $user_id      Cashier user ID.
+     * @param string      $user_name    Cashier display name.
+     * @param string      $register_id  Register identifier.
+     * @param string      $reason       Audit log reason text.
+     * @param string|null $branch_id    Multi-branch feature: optional branch this
+     *                                  sale belongs to. When a wc_pos_branch_stock
+     *                                  row exists for this product at this branch,
+     *                                  that row is checked and deducted alongside
+     *                                  the global WooCommerce stock, inside the
+     *                                  same transaction/lock. Products that have
+     *                                  never had branch-specific stock allocated
+     *                                  fall through to the original global-only
+     *                                  behavior — this is fully backward compatible
+     *                                  with single-location stores.
      */
-    public static function reduce_stock_atomic( $product_id, $quantity, $order_id, $user_id, $user_name, $register_id, $reason = 'POS Sale' ) {
+    public static function reduce_stock_atomic( $product_id, $quantity, $order_id, $user_id, $user_name, $register_id, $reason = 'POS Sale', $branch_id = null ) {
         global $wpdb;
 
         if ( $quantity <= 0 ) {
@@ -43,9 +61,47 @@ class Inventory {
             }
 
             $current_stock = (int) $stock_row->meta_value;
+            $product       = wc_get_product( $product_id );
 
-            // Check stock sufficiency.
-            $product = wc_get_product( $product_id );
+            // Determine whether $product_id is a variation or a simple product,
+            // so both the audit log and branch-stock lookups use the correct
+            // parent/variation ID pairing (wc_pos_branch_stock keys on the
+            // parent product_id + a separate variation_id column).
+            $is_variation     = $product && $product->is_type( 'variation' );
+            $log_product_id   = $is_variation ? $product->get_parent_id() : $product_id;
+            $log_variation_id = $is_variation ? $product_id : 0;
+
+            // --- Multi-branch: check + lock branch-specific stock, if allocated ---
+            $branch_stock_row   = null;
+            $branch_stock_table = $wpdb->prefix . 'wc_pos_branch_stock';
+
+            if ( $branch_id ) {
+                $branch_stock_row = $wpdb->get_row( $wpdb->prepare(
+                    "SELECT id, stock_quantity FROM {$branch_stock_table}
+                     WHERE branch_id = %s AND product_id = %d AND variation_id = %d FOR UPDATE",
+                    $branch_id, $log_product_id, $log_variation_id
+                ) );
+            }
+
+            if ( $branch_stock_row && $product && $product->managing_stock() && ! $product->backorders_allowed() ) {
+                if ( (int) $branch_stock_row->stock_quantity < $quantity ) {
+                    $wpdb->query( 'ROLLBACK' );
+                    return new \WP_Error(
+                        'insufficient_branch_stock',
+                        sprintf(
+                            /* translators: 1: product name, 2: available branch stock, 3: requested quantity */
+                            __( 'Insufficient stock for %1$s at this branch. Available: %2$d, Requested: %3$d', 'wc-pos-pro' ),
+                            $product->get_name(),
+                            (int) $branch_stock_row->stock_quantity,
+                            $quantity
+                        )
+                    );
+                }
+            }
+
+            // Check global stock sufficiency (unchanged from original behavior —
+            // global stock is always deducted regardless of branch allocation,
+            // since it represents the company-wide total).
             if ( $product && $product->managing_stock() && ! $product->backorders_allowed() ) {
                 if ( $current_stock < $quantity ) {
                     $wpdb->query( 'ROLLBACK' );
@@ -74,11 +130,17 @@ class Inventory {
                 return new \WP_Error( 'stock_update_failed', __( 'Failed to update product stock.', 'wc-pos-pro' ) );
             }
 
-            // Determine whether $product_id is a variation or a simple product,
-            // so the audit log captures the correct parent/variation IDs.
-            $is_variation  = $product && $product->is_type( 'variation' );
-            $log_product_id   = $is_variation ? $product->get_parent_id() : $product_id;
-            $log_variation_id = $is_variation ? $product_id : 0;
+            // Deduct the branch-specific allocation too, if one exists.
+            if ( $branch_stock_row ) {
+                $new_branch_stock = max( 0, (int) $branch_stock_row->stock_quantity - $quantity );
+                $wpdb->update(
+                    $branch_stock_table,
+                    array( 'stock_quantity' => $new_branch_stock ),
+                    array( 'id' => $branch_stock_row->id ),
+                    array( '%d' ),
+                    array( '%d' )
+                );
+            }
 
             // Record Immutable Inventory Audit Log.
             $log_table = $wpdb->prefix . 'wc_pos_inventory_logs';
@@ -86,6 +148,7 @@ class Inventory {
                 $log_table,
                 array(
                     'id'               => 'INV-' . wp_generate_uuid4(),
+                    'branch_id'        => $branch_id ?: '',
                     'product_id'       => $log_product_id,
                     'variation_id'     => $log_variation_id,
                     'product_name'     => $product ? $product->get_name() : 'Unknown Product',

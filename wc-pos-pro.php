@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce POS Pro (Enterprise Edition)
  * Plugin URI: https://github.com/saliu75/WooCommerce-pos-pro/
  * Description: Enterprise-grade, atomic inventory protected Point of Sale system built specifically for WooCommerce.
- * Version: 1.3.3
+ * Version: 1.5.0
  * Author: Muideen Saliu
  * Author URI: https://github.com/saliu74
  * License: GPL-2.0+
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
 
-define( 'WC_POS_VERSION', '1.3.0' );
+define( 'WC_POS_VERSION', '1.5.0' );
 define( 'WC_POS_FILE', __FILE__ );
 define( 'WC_POS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WC_POS_URL', plugin_dir_url( __FILE__ ) );
@@ -64,11 +64,48 @@ final class WC_POS_Pro {
         // Install Custom Database Tables.
         WCPOS\Database\Tables::create_tables();
 
+        // Seed a "default" branch so registers/shifts/orders that default to
+        // branch_id = 'default' (the schema default) point at a real row
+        // instead of an orphaned reference — this matters for single-location
+        // stores that never explicitly create a branch of their own.
+        $this->seed_default_branch();
+
         // Register Capabilities.
         WCPOS\Admin\Permissions::register_capabilities();
 
         $this->register_rewrite_rules();
         flush_rewrite_rules();
+    }
+
+    /**
+     * Insert a "default" branch row if one doesn't already exist. Idempotent —
+     * safe to call on every activation (e.g. after a deactivate/reactivate).
+     */
+    private function seed_default_branch() {
+        global $wpdb;
+        $table = $wpdb->prefix . 'wc_pos_branches';
+
+        $exists = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE id = %s", 'default' ) );
+        if ( $exists ) {
+            return;
+        }
+
+        $wpdb->insert( $table, array(
+            'id'     => 'default',
+            'name'   => __( 'Main Branch', 'wc-pos-pro' ),
+            'status' => 'active',
+        ) );
+    }
+
+    /**
+     * Cheap existence check so init_plugin() doesn't error out on a site
+     * where the plugin was just updated but hasn't been reactivated yet
+     * (i.e. the branches table may not exist for a brief window).
+     */
+    private function table_exists( $table_name ) {
+        global $wpdb;
+        $found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table_name ) );
+        return $found === $table_name;
     }
 
     public function deactivate() {
@@ -80,6 +117,8 @@ final class WC_POS_Pro {
             return;
         }
 
+        global $wpdb;
+
         // Register Rewrite Rules for /pos route.
         add_action( 'init', array( $this, 'register_rewrite_rules' ) );
         add_filter( 'query_vars', array( $this, 'register_query_vars' ) );
@@ -87,6 +126,52 @@ final class WC_POS_Pro {
 
         // Initialize API Endpoints.
         WCPOS\API\REST_Server::get_instance();
+
+        // Initialize Branch Management API. (Previously defined but never
+        // instantiated — its REST routes were unreachable/404 until this call.)
+        WCPOS\API\Branches_Controller::init();
+
+        // Self-healing table check. activate() runs Tables::create_tables()
+        // once, but dbDelta() can occasionally fail to create a table on some
+        // hosting setups without throwing a visible error — as happened here
+        // with wc_pos_branches. Rather than require a manual deactivate/
+        // reactivate to retry, re-verify all expected tables whenever the
+        // plugin version changes (covers a fresh activation gap immediately,
+        // and re-checks again on every future update) and recreate anything
+        // missing. dbDelta() is always safe to re-run — it won't touch
+        // existing data, only creates what's missing or brings schema in line.
+        $verified_version = get_option( 'wc_pos_tables_verified_version', '' );
+        if ( $verified_version !== WC_POS_VERSION ) {
+            $expected_tables = array(
+                'wc_pos_branches',
+                'wc_pos_branch_stock',
+                'wc_pos_registers',
+                'wc_pos_shifts',
+                'wc_pos_inventory_logs',
+                'wc_pos_transfers',
+                'wc_pos_tax_rates',
+            );
+            $missing = array();
+            foreach ( $expected_tables as $t ) {
+                if ( ! $this->table_exists( $wpdb->prefix . $t ) ) {
+                    $missing[] = $t;
+                }
+            }
+            if ( ! empty( $missing ) ) {
+                WCPOS\Database\Tables::create_tables();
+            }
+            update_option( 'wc_pos_tables_verified_version', WC_POS_VERSION );
+        }
+
+        // Belt-and-braces: also seed the default branch here, not just in
+        // activate(). This plugin may already be active on existing sites,
+        // where activate() won't re-fire just because this code was added —
+        // it only runs on a fresh activation or a manual deactivate/reactivate.
+        // seed_default_branch() is idempotent (one indexed lookup), so this
+        // is safe to call on every load.
+        if ( $this->table_exists( $wpdb->prefix . 'wc_pos_branches' ) ) {
+            $this->seed_default_branch();
+        }
 
         // Initialize Admin Submenu.
         if ( is_admin() ) {
@@ -116,7 +201,7 @@ final class WC_POS_Pro {
             return;
         }
 
-        if ( ! is_user_logged_in() || ( ! current_user_can( 'read_private_shop_orders' ) && ! current_user_can( 'manage_woocommerce' ) ) ) {
+        if ( ! is_user_logged_in() || ( ! current_user_can( 'process_wc_pos_sales' ) && ! current_user_can( 'read_private_shop_orders' ) && ! current_user_can( 'manage_woocommerce' ) ) ) {
             auth_redirect();
         }
 

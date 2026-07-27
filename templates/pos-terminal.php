@@ -43,6 +43,11 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         html.light body { background-color: #f1f5f9 !important; color: #0f172a !important; }
         html.light header { background-color: #ffffff !important; border-color: #cbd5e1 !important; }
         html.light aside { background-color: #ffffff !important; border-color: #cbd5e1 !important; }
+        /* Responsive fix: hide the scrollbar on the header's horizontally-
+           scrollable control cluster (small screens) — Tailwind's CDN build
+           has no scrollbar-hide utility by default. */
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         html.light main { background-color: #f8fafc !important; border-color: #cbd5e1 !important; }
         html.light .pos-card { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
         html.light .pos-card h3 { color: #0f172a !important; }
@@ -61,7 +66,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
     <!-- POS Top Navigation Bar -->
     <header class="bg-slate-950 border-b border-slate-800 px-4 py-2.5 flex items-center justify-between shrink-0 z-10">
         <div class="flex items-center space-x-3">
-            <button onclick="toggleSidebar()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition md:hidden">
+            <button onclick="toggleSidebar()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition lg:hidden">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
             </button>
             <div class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></div>
@@ -71,25 +76,35 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             </div>
         </div>
 
-        <div class="flex items-center space-x-2">
-            <span id="pos-sync-status" class="text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full font-mono">
+        <div class="flex items-center space-x-2 overflow-x-auto max-w-[60vw] sm:max-w-none scrollbar-hide">
+            <span id="pos-sync-status" class="hidden sm:inline-flex shrink-0 text-[11px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full font-mono">
                 &bull; SYNCED
             </span>
 
+            <!-- Branch / Register picker (multi-branch feature) -->
+            <button onclick="openBranchPicker()" id="branch-register-indicator" class="shrink-0 text-[11px] bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 px-2.5 py-1 rounded-lg font-mono transition" title="Change Branch / Register">
+                &#127970; <span id="branch-register-label">Select Branch</span>
+            </button>
+
+            <!-- Shift open/close indicator -->
+            <button onclick="openShiftModal()" id="shift-indicator" class="hidden shrink-0 text-[11px] px-2.5 py-1 rounded-lg font-mono transition border" title="Open / Close Register Shift">
+                <span id="shift-indicator-label">Shift: —</span>
+            </button>
+
             <!-- Dark / Light Theme Toggle -->
-            <button onclick="toggleTheme()" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 transition" title="Toggle Theme">
+            <button onclick="toggleTheme()" class="shrink-0 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-400 transition" title="Toggle Theme">
                 <svg id="theme-icon-sun" class="w-4 h-4 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                 <svg id="theme-icon-moon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
             </button>
 
             <!-- Lock Terminal -->
-            <button onclick="lockTerminal()" class="p-2 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition text-xs flex items-center space-x-1" title="Lock Register">
+            <button onclick="lockTerminal()" class="shrink-0 p-2 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition text-xs flex items-center space-x-1" title="Lock Register">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
                 <span class="hidden sm:inline">Lock</span>
             </button>
 
             <!-- Exit Terminal -->
-            <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-pos-pro' ) ); ?>" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition">
+            <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-pos-pro' ) ); ?>" class="shrink-0 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition">
                 Exit
             </a>
         </div>
@@ -98,8 +113,17 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
     <!-- Main Workspace -->
     <div class="flex-1 flex overflow-hidden">
 
+        <!-- Mobile-only backdrop for the sidebar overlay -->
+        <div id="pos-sidebar-backdrop" onclick="toggleSidebar()" class="hidden fixed inset-0 bg-black/50 z-20 lg:hidden"></div>
+
         <!-- Sidebar Navigation (Complete matched menu) -->
-        <aside id="pos-sidebar" class="w-16 bg-slate-950 border-r border-slate-800 flex flex-col items-center py-4 space-y-5 shrink-0 z-10">
+        <!-- Responsive fix: this was always visible at a fixed 64px width,
+             which — combined with the cart's fixed 384px width — made the
+             layout unusable below ~1024px (a phone screen is often narrower
+             than the cart panel alone). Hidden by default, shown via lg:flex
+             on desktop/tablet, and toggleable as a fixed overlay on mobile
+             via the existing hamburger button + toggleSidebar(). -->
+        <aside id="pos-sidebar" class="hidden lg:flex fixed lg:static inset-y-0 left-0 z-30 w-16 bg-slate-950 border-r border-slate-800 flex-col items-center py-4 space-y-5 shrink-0">
             <button onclick="switchTab('register')" id="nav-btn-register" class="p-3 rounded-xl bg-indigo-600 text-white shadow-lg transition" title="POS Terminal / Register">
                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
             </button>
@@ -134,7 +158,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 </div>
 
                 <!-- Product Categories Filter Pills Bar -->
-                <div id="category-pills-bar" class="flex items-center space-x-2 overflow-x-auto pb-1 shrink-0 scrollbar-none text-xs">
+                <div id="category-pills-bar" class="flex items-center space-x-2 overflow-x-auto pb-1 shrink-0 scrollbar-hide text-xs">
                     <button onclick="filterCategory(null)" id="cat-pill-all" class="px-3 py-1.5 rounded-xl bg-indigo-600 text-white font-bold whitespace-nowrap transition">All Products</button>
                     <!-- Dynamically populated category pills -->
                 </div>
@@ -147,10 +171,30 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                         </div>
                     </div>
                 </div>
+
+                <!-- Mobile-only floating button to open the cart as a full-screen view -->
+                <button id="mobile-cart-toggle" onclick="openMobileCart()" class="hidden lg:hidden fixed bottom-5 left-1/2 -translate-x-1/2 z-30 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-5 py-3 rounded-full shadow-2xl items-center space-x-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
+                    <span id="mobile-cart-toggle-label">View Cart</span>
+                </button>
             </main>
 
             <!-- Right: Active Cart -->
-            <aside class="w-96 bg-slate-950 flex flex-col shrink-0">
+            <!-- Responsive fix: this was a permanently-visible, fixed 384px
+                 column — on a phone screen that's often wider than the
+                 viewport itself, making the cart unusable (or invisible)
+                 alongside the product grid. Below lg, it's hidden by default
+                 and shown as a full-screen view via the floating "View Cart"
+                 button, with a "Back to Products" bar to return. -->
+            <aside id="cart-aside" class="hidden lg:flex fixed lg:static inset-0 z-40 w-full lg:w-96 bg-slate-950 flex-col shrink-0">
+
+                <!-- Mobile-only: back to product grid -->
+                <div class="lg:hidden flex items-center px-3 py-2.5 border-b border-slate-800 bg-slate-900">
+                    <button onclick="closeMobileCart()" class="flex items-center space-x-1.5 text-xs text-slate-300 font-bold">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                        <span>Back to Products</span>
+                    </button>
+                </div>
                 
                 <!-- Customer Selection Bar -->
                 <div class="p-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
@@ -181,77 +225,95 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     </div>
                 </div>
 
-                <!-- Cart Line Items -->
-                <div id="cart-items" class="flex-1 overflow-y-auto p-3 space-y-2">
-                    <div class="text-center text-slate-500 text-xs py-16">Cart is empty</div>
+                <!-- Bug fix (UX): the checkout panel (totals, payment tabs,
+                     cash calculator, order note) could grow tall enough that
+                     the Complete Sale button — the single most important
+                     action on this screen — needed scrolling or zooming out
+                     to even reach, especially with a large cart. Capping that
+                     panel's own height (the previous attempt) still left the
+                     button reachable only via an easy-to-miss internal
+                     scrollbar. Fixed properly this time: cart items + totals
+                     + payment details now share ONE scrollable region, and
+                     the Total/Complete-Sale button are a sticky footer
+                     (shrink-0, outside the scroll area) that's always
+                     visible no matter how much is above it. -->
+                <div class="flex-1 min-h-0 overflow-y-auto">
+                    <!-- Cart Line Items -->
+                    <div id="cart-items" class="min-h-[120px] p-3 space-y-2">
+                        <div class="text-center text-slate-500 text-xs py-16">Cart is empty</div>
+                    </div>
+
+                    <!-- Totals + Payment Details -->
+                    <div class="p-4 bg-slate-900 border-t border-slate-800 space-y-3">
+                        <!-- Totals -->
+                        <div class="space-y-1.5 text-xs">
+                            <div class="flex justify-between text-slate-400"><span>Subtotal:</span><span id="cart-subtotal" class="font-mono">$0.00</span></div>
+                            <div class="flex justify-between text-amber-400" id="cart-discount-row" style="display:none !important;">
+                                <span>Discount:</span><span id="cart-discount-total" class="font-mono">-$0.00</span>
+                            </div>
+                            <div class="flex justify-between text-slate-400"><span id="cart-tax-label">Tax (Est.):</span><span id="cart-tax" class="font-mono">$0.00</span></div>
+                        </div>
+
+                        <!-- Payment Method Tabs -->
+                        <div class="grid grid-cols-3 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                            <button onclick="setPaymentMethod('cash')" id="pay-btn-cash" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold text-[11px] transition">Cash</button>
+                            <button onclick="setPaymentMethod('card')" id="pay-btn-card" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Card</button>
+                            <button onclick="setPaymentMethod('split')" id="pay-btn-split" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Split</button>
+                        </div>
+
+                        <!-- Cash tendered / change calculator (cash mode) -->
+                        <div id="cash-calc-panel" class="space-y-2 text-xs">
+                            <div class="flex items-center space-x-2">
+                                <label class="text-slate-400 shrink-0 w-20">Tendered:</label>
+                                <input type="number" id="cash-tendered" min="0" step="0.01" placeholder="0.00"
+                                    oninput="updateChangeDue()"
+                                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-indigo-500" />
+                            </div>
+                            <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                                <span class="text-slate-400">Change Due:</span>
+                                <span id="change-due" class="font-mono font-bold text-emerald-400">$0.00</span>
+                            </div>
+                            <!-- Quick-amount buttons -->
+                            <div id="quick-amounts" class="grid grid-cols-4 gap-1"></div>
+                        </div>
+
+                        <!-- Split payment panel -->
+                        <div id="split-payment-panel" class="hidden space-y-2 text-xs">
+                            <p class="text-slate-400 text-[11px]">Enter amounts for each method. They must sum to the total.</p>
+                            <div class="flex items-center space-x-2">
+                                <label class="text-slate-400 shrink-0 w-14">Cash:</label>
+                                <input type="number" id="split-cash" min="0" step="0.01" placeholder="0.00"
+                                    oninput="updateSplitBalance()"
+                                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <label class="text-slate-400 shrink-0 w-14">Card:</label>
+                                <input type="number" id="split-card" min="0" step="0.01" placeholder="0.00"
+                                    oninput="updateSplitBalance()"
+                                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
+                            </div>
+                            <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                                <span class="text-slate-400">Remaining:</span>
+                                <span id="split-remaining" class="font-mono font-bold text-amber-400">$0.00</span>
+                            </div>
+                        </div>
+
+                        <!-- Order Note / Terminal Reference (Bug fix #3) -->
+                        <div class="space-y-1">
+                            <label for="pos-order-note" class="text-slate-400 text-[11px]">Order Note / Terminal Reference (optional)</label>
+                            <textarea id="pos-order-note" rows="2" maxlength="1000"
+                                placeholder="e.g. Terminal ref #4471, manual card auth code..."
+                                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                        </div>
+                    </div>
                 </div>
 
-                <!-- Cart Summary & Checkout -->
-                <div class="p-4 bg-slate-900 border-t border-slate-800 space-y-3">
-                    <!-- Totals -->
-                    <div class="space-y-1.5 text-xs">
-                        <div class="flex justify-between text-slate-400"><span>Subtotal:</span><span id="cart-subtotal" class="font-mono">$0.00</span></div>
-                        <div class="flex justify-between text-amber-400" id="cart-discount-row" style="display:none !important;">
-                            <span>Discount:</span><span id="cart-discount-total" class="font-mono">-$0.00</span>
-                        </div>
-                        <div class="flex justify-between text-slate-400"><span id="cart-tax-label">Tax (Est.):</span><span id="cart-tax" class="font-mono">$0.00</span></div>
-                        <div class="flex justify-between text-white text-base font-bold pt-2 border-t border-slate-800">
-                            <span>TOTAL:</span><span id="cart-total" class="text-emerald-400 font-mono text-lg">$0.00</span>
-                        </div>
+                <!-- Sticky footer: Total + Complete Sale — always visible,
+                     never part of the scrollable region above. -->
+                <div class="shrink-0 p-4 bg-slate-900 border-t border-slate-700 space-y-2.5 shadow-[0_-4px_12px_rgba(0,0,0,0.3)]">
+                    <div class="flex justify-between text-white text-base font-bold">
+                        <span>TOTAL:</span><span id="cart-total" class="text-emerald-400 font-mono text-lg">$0.00</span>
                     </div>
-
-                    <!-- Payment Method Tabs -->
-                    <div class="grid grid-cols-3 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
-                        <button onclick="setPaymentMethod('cash')" id="pay-btn-cash" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold text-[11px] transition">Cash</button>
-                        <button onclick="setPaymentMethod('card')" id="pay-btn-card" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Card</button>
-                        <button onclick="setPaymentMethod('split')" id="pay-btn-split" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Split</button>
-                    </div>
-
-                    <!-- Cash tendered / change calculator (cash mode) -->
-                    <div id="cash-calc-panel" class="space-y-2 text-xs">
-                        <div class="flex items-center space-x-2">
-                            <label class="text-slate-400 shrink-0 w-20">Tendered:</label>
-                            <input type="number" id="cash-tendered" min="0" step="0.01" placeholder="0.00"
-                                oninput="updateChangeDue()"
-                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-indigo-500" />
-                        </div>
-                        <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
-                            <span class="text-slate-400">Change Due:</span>
-                            <span id="change-due" class="font-mono font-bold text-emerald-400">$0.00</span>
-                        </div>
-                        <!-- Quick-amount buttons -->
-                        <div id="quick-amounts" class="grid grid-cols-4 gap-1"></div>
-                    </div>
-
-                    <!-- Split payment panel -->
-                    <div id="split-payment-panel" class="hidden space-y-2 text-xs">
-                        <p class="text-slate-400 text-[11px]">Enter amounts for each method. They must sum to the total.</p>
-                        <div class="flex items-center space-x-2">
-                            <label class="text-slate-400 shrink-0 w-14">Cash:</label>
-                            <input type="number" id="split-cash" min="0" step="0.01" placeholder="0.00"
-                                oninput="updateSplitBalance()"
-                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
-                        </div>
-                        <div class="flex items-center space-x-2">
-                            <label class="text-slate-400 shrink-0 w-14">Card:</label>
-                            <input type="number" id="split-card" min="0" step="0.01" placeholder="0.00"
-                                oninput="updateSplitBalance()"
-                                class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
-                        </div>
-                        <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
-                            <span class="text-slate-400">Remaining:</span>
-                            <span id="split-remaining" class="font-mono font-bold text-amber-400">$0.00</span>
-                        </div>
-                    </div>
-
-                    <!-- Order Note / Terminal Reference (Bug fix #3) -->
-                    <div class="space-y-1">
-                        <label for="pos-order-note" class="text-slate-400 text-[11px]">Order Note / Terminal Reference (optional)</label>
-                        <textarea id="pos-order-note" rows="2" maxlength="1000"
-                            placeholder="e.g. Terminal ref #4471, manual card auth code..."
-                            class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
-                    </div>
-
                     <button onclick="processCheckout()" id="btn-checkout" disabled class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white font-extrabold text-sm rounded-xl transition shadow-lg flex items-center justify-center space-x-2">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"></path></svg>
                         <span>COMPLETE SALE &amp; PRINT RECEIPT</span>
@@ -352,6 +414,74 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         </div>
     </div>
 
+    <!-- OVERLAY: Branch / Register Picker (multi-branch feature) -->
+    <div id="branch-picker-overlay" class="hidden fixed inset-0 bg-slate-950/95 backdrop-blur-md z-[70] flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full space-y-5 shadow-2xl">
+            <div class="text-center">
+                <h3 class="text-base font-bold text-white">Select Branch &amp; Register</h3>
+                <p class="text-xs text-slate-400 mt-1">Determines which branch's stock and orders this terminal uses.</p>
+            </div>
+            <div class="space-y-1.5">
+                <label class="text-xs text-slate-400">Branch</label>
+                <select id="branch-picker-select" onchange="onBranchPickerChange()" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+                    <option value="">Loading branches...</option>
+                </select>
+            </div>
+            <div class="space-y-1.5">
+                <label class="text-xs text-slate-400">Register</label>
+                <select id="register-picker-select" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-indigo-500">
+                    <option value="">Select a branch first</option>
+                </select>
+            </div>
+            <div id="branch-picker-error" class="hidden text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2"></div>
+            <button onclick="confirmBranchPicker()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs py-3 rounded-xl transition">
+                CONFIRM
+            </button>
+        </div>
+    </div>
+
+    <!-- OVERLAY: Shift Open/Close -->
+    <div id="shift-modal-overlay" class="hidden fixed inset-0 bg-slate-950/95 backdrop-blur-md z-[70] flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full space-y-5 shadow-2xl">
+            <div class="text-center">
+                <h3 class="text-base font-bold text-white" id="shift-modal-title">Open Register Shift</h3>
+                <p class="text-xs text-slate-400 mt-1" id="shift-modal-subtitle"></p>
+            </div>
+
+            <!-- Open-shift fields -->
+            <div id="shift-open-fields" class="space-y-3">
+                <div class="space-y-1.5">
+                    <label class="text-xs text-slate-400">Opening Float</label>
+                    <input type="number" id="shift-opening-float" min="0" step="0.01" value="0.00" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div class="space-y-1.5">
+                    <label class="text-xs text-slate-400">Notes (optional)</label>
+                    <textarea id="shift-open-notes" rows="2" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                </div>
+            </div>
+
+            <!-- Close-shift fields -->
+            <div id="shift-close-fields" class="hidden space-y-3">
+                <div class="space-y-1.5">
+                    <label class="text-xs text-slate-400">Actual Cash Counted</label>
+                    <input type="number" id="shift-actual-cash" min="0" step="0.01" value="0.00" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-indigo-500" />
+                </div>
+                <div class="space-y-1.5">
+                    <label class="text-xs text-slate-400">Notes (optional)</label>
+                    <textarea id="shift-close-notes" rows="2" class="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                </div>
+                <div id="shift-close-summary" class="hidden bg-slate-800 rounded-xl p-3 text-[11px] text-slate-300 space-y-1"></div>
+            </div>
+
+            <div id="shift-modal-error" class="hidden text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2"></div>
+
+            <div class="flex space-x-2">
+                <button onclick="closeShiftModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs py-3 rounded-xl transition">CANCEL</button>
+                <button onclick="submitShiftAction()" id="shift-modal-submit-btn" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs py-3 rounded-xl transition">OPEN SHIFT</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Hidden Printable Receipt Template -->
     <div id="printable-receipt" class="hidden p-6 font-mono text-xs text-black bg-white">
         <!-- Receipt width set dynamically from config -->
@@ -445,6 +575,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         let selectedPaymentMethod = 'cash';
         let parkedCarts = JSON.parse(localStorage.getItem('wc_pos_parked_carts') || '[]');
         let currentTab = 'register';
+        // Multi-branch feature: persisted branch/register selection.
+        let currentBranchId = localStorage.getItem('wc_pos_branch_id') || '';
+        let currentRegisterId = localStorage.getItem('wc_pos_register_id') || '';
+        let branchPickerBranches = [];
         let searchCustomerResults = [];
 
         // Discount state
@@ -466,9 +600,61 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
 
         function toggleSidebar() {
             const sb = document.getElementById('pos-sidebar');
+            const backdrop = document.getElementById('pos-sidebar-backdrop');
             if (sb) {
+                // Bug fix: previously only toggled 'hidden', which left the
+                // element with no display utility active below the lg
+                // breakpoint once shown (an <aside> defaults to display:block,
+                // breaking the flex-column icon layout). Toggling 'flex'
+                // alongside it ensures it actually lays out as a flex column
+                // when opened as a mobile overlay.
                 sb.classList.toggle('hidden');
+                sb.classList.toggle('flex');
             }
+            if (backdrop) {
+                backdrop.classList.toggle('hidden');
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Responsive fix: mobile cart view. Below the lg breakpoint the cart
+        // aside is a hidden, full-screen overlay rather than a permanent
+        // side column — these open/close it, and the floating button's
+        // visibility/label is kept in sync from renderCart().
+        // ---------------------------------------------------------------
+
+        function openMobileCart() {
+            const aside = document.getElementById('cart-aside');
+            if (aside) {
+                aside.classList.remove('hidden');
+                aside.classList.add('flex');
+            }
+        }
+
+        function closeMobileCart() {
+            const aside = document.getElementById('cart-aside');
+            if (aside) {
+                aside.classList.add('hidden');
+                aside.classList.remove('flex');
+            }
+        }
+
+        function updateMobileCartToggle() {
+            const btn = document.getElementById('mobile-cart-toggle');
+            const label = document.getElementById('mobile-cart-toggle-label');
+            if (!btn || !label) return;
+
+            if (cart.length === 0) {
+                btn.classList.add('hidden');
+                btn.classList.remove('flex');
+                return;
+            }
+
+            const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
+            const grandTotal = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity) - (c.discountAmount || 0), 0);
+            label.textContent = 'View Cart (' + totalQty + ') \u2022 ' + currencySymbol + grandTotal.toFixed(2);
+            btn.classList.remove('hidden');
+            btn.classList.add('flex');
         }
 
         // Dark/Light Theme Handler
@@ -501,6 +687,232 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const moon = document.getElementById('theme-icon-moon');
             if (sun) sun.classList.toggle('hidden', !isDark);
             if (moon) moon.classList.toggle('hidden', isDark);
+        }
+
+        // ---------------------------------------------------------------
+        // Multi-branch feature: Branch / Register Picker
+        // ---------------------------------------------------------------
+
+        function updateBranchRegisterLabel() {
+            const label = document.getElementById('branch-register-label');
+            if (!label) return;
+            if (currentBranchId && currentRegisterId) {
+                const branch = branchPickerBranches.find(b => b.id === currentBranchId);
+                label.textContent = (branch ? branch.name : currentBranchId) + ' — ' + currentRegisterId;
+            } else {
+                label.textContent = 'Select Branch';
+            }
+        }
+
+        async function openBranchPicker() {
+            const errorBox = document.getElementById('branch-picker-error');
+            errorBox.classList.add('hidden');
+            document.getElementById('branch-picker-overlay').classList.remove('hidden');
+
+            const branchSelect = document.getElementById('branch-picker-select');
+            branchSelect.innerHTML = '<option value="">Loading branches...</option>';
+
+            try {
+                const res = await fetch(restUrl + '/branches', { headers: { 'X-WP-Nonce': restNonce } });
+                const json = await res.json();
+                branchPickerBranches = (json && json.data) ? json.data.filter(b => b.status === 'active') : [];
+            } catch (e) {
+                branchPickerBranches = [];
+            }
+
+            if (branchPickerBranches.length === 0) {
+                branchSelect.innerHTML = '<option value="">No active branches found</option>';
+                errorBox.textContent = 'No active branches configured. Ask a manager to set one up under POS > Branches.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+
+            branchSelect.innerHTML = branchPickerBranches.map(b =>
+                '<option value="' + b.id + '"' + (b.id === currentBranchId ? ' selected' : '') + '>' + b.name + '</option>'
+            ).join('');
+
+            await loadRegistersForPicker(branchSelect.value || branchPickerBranches[0].id);
+        }
+
+        async function onBranchPickerChange() {
+            const branchId = document.getElementById('branch-picker-select').value;
+            await loadRegistersForPicker(branchId);
+        }
+
+        async function loadRegistersForPicker(branchId) {
+            const registerSelect = document.getElementById('register-picker-select');
+            registerSelect.innerHTML = '<option value="">Loading registers...</option>';
+
+            if (!branchId) {
+                registerSelect.innerHTML = '<option value="">Select a branch first</option>';
+                return;
+            }
+
+            try {
+                const res = await fetch(restUrl + '/registers?branchId=' + encodeURIComponent(branchId), { headers: { 'X-WP-Nonce': restNonce } });
+                const registers = await res.json();
+
+                if (!registers || registers.length === 0) {
+                    registerSelect.innerHTML = '<option value="">No registers for this branch</option>';
+                    return;
+                }
+
+                registerSelect.innerHTML = registers.map(r =>
+                    '<option value="' + r.id + '"' + (r.id === currentRegisterId ? ' selected' : '') + '>' + r.name + (r.location ? ' (' + r.location + ')' : '') + '</option>'
+                ).join('');
+            } catch (e) {
+                registerSelect.innerHTML = '<option value="">Could not load registers</option>';
+            }
+        }
+
+        function confirmBranchPicker() {
+            const branchId    = document.getElementById('branch-picker-select').value;
+            const registerId  = document.getElementById('register-picker-select').value;
+            const errorBox    = document.getElementById('branch-picker-error');
+
+            if (!branchId || !registerId) {
+                errorBox.textContent = 'Please select both a branch and a register.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+
+            currentBranchId = branchId;
+            currentRegisterId = registerId;
+            localStorage.setItem('wc_pos_branch_id', branchId);
+            localStorage.setItem('wc_pos_register_id', registerId);
+
+            document.getElementById('branch-picker-overlay').classList.add('hidden');
+            updateBranchRegisterLabel();
+            fetchProducts(); // re-fetch with branch-specific stock now that context changed
+            refreshShiftStatus();
+        }
+
+        // ---------------------------------------------------------------
+        // Shift open/close
+        // ---------------------------------------------------------------
+
+        let currentShiftStatus = null; // 'open' | 'closed' | null (unknown)
+
+        async function refreshShiftStatus() {
+            const indicator = document.getElementById('shift-indicator');
+            if (!currentRegisterId) {
+                indicator.classList.add('hidden');
+                return;
+            }
+
+            try {
+                const res = await fetch(restUrl + '/registers?branchId=' + encodeURIComponent(currentBranchId), { headers: { 'X-WP-Nonce': restNonce } });
+                const registers = await res.json();
+                const reg = Array.isArray(registers) ? registers.find(r => r.id === currentRegisterId) : null;
+                currentShiftStatus = reg ? reg.status : null;
+            } catch (e) {
+                currentShiftStatus = null;
+            }
+
+            updateShiftIndicator();
+        }
+
+        function updateShiftIndicator() {
+            const indicator = document.getElementById('shift-indicator');
+            const label = document.getElementById('shift-indicator-label');
+            if (!currentRegisterId) { indicator.classList.add('hidden'); return; }
+
+            indicator.classList.remove('hidden');
+            if (currentShiftStatus === 'open') {
+                label.textContent = 'Shift: OPEN';
+                indicator.className = 'text-[11px] px-2.5 py-1 rounded-lg font-mono transition border bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/30';
+            } else {
+                label.textContent = 'Shift: CLOSED';
+                indicator.className = 'text-[11px] px-2.5 py-1 rounded-lg font-mono transition border bg-slate-700/40 hover:bg-slate-700/60 text-slate-300 border-slate-600/40';
+            }
+        }
+
+        function openShiftModal() {
+            if (!currentBranchId || !currentRegisterId) {
+                openBranchPicker();
+                return;
+            }
+
+            document.getElementById('shift-modal-error').classList.add('hidden');
+            document.getElementById('shift-close-summary').classList.add('hidden');
+            const isOpen = currentShiftStatus === 'open';
+
+            document.getElementById('shift-modal-title').textContent = isOpen ? 'Close Register Shift' : 'Open Register Shift';
+            document.getElementById('shift-modal-subtitle').textContent = isOpen
+                ? 'Count the drawer and enter the actual cash total.'
+                : 'Enter the starting cash float for this register.';
+            document.getElementById('shift-open-fields').classList.toggle('hidden', isOpen);
+            document.getElementById('shift-close-fields').classList.toggle('hidden', !isOpen);
+            document.getElementById('shift-modal-submit-btn').textContent = isOpen ? 'CLOSE SHIFT' : 'OPEN SHIFT';
+
+            document.getElementById('shift-modal-overlay').classList.remove('hidden');
+        }
+
+        function closeShiftModal() {
+            document.getElementById('shift-modal-overlay').classList.add('hidden');
+        }
+
+        async function submitShiftAction() {
+            const isOpen = currentShiftStatus === 'open';
+            const action = isOpen ? 'close' : 'open';
+            const errorBox = document.getElementById('shift-modal-error');
+            errorBox.classList.add('hidden');
+
+            const payload = {
+                action,
+                registerId: currentRegisterId,
+                branchId: currentBranchId,
+            };
+            if (action === 'open') {
+                payload.openingFloat = parseFloat(document.getElementById('shift-opening-float').value) || 0;
+                payload.notes = document.getElementById('shift-open-notes').value.trim();
+            } else {
+                payload.actualCash = parseFloat(document.getElementById('shift-actual-cash').value) || 0;
+                payload.notes = document.getElementById('shift-close-notes').value.trim();
+            }
+
+            const btn = document.getElementById('shift-modal-submit-btn');
+            btn.disabled = true;
+
+            try {
+                const res = await fetch(restUrl + '/registers/shift', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify(payload),
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    errorBox.textContent = data.message || 'Could not complete this action.';
+                    errorBox.classList.remove('hidden');
+                    return;
+                }
+
+                if (action === 'close' && data.summary) {
+                    const s = data.summary;
+                    const summaryBox = document.getElementById('shift-close-summary');
+                    summaryBox.innerHTML =
+                        '<div class="flex justify-between"><span>Total Sales:</span><span>' + currencySymbol + s.totalSales.toFixed(2) + '</span></div>' +
+                        '<div class="flex justify-between"><span>Expected Cash:</span><span>' + currencySymbol + s.expectedCash.toFixed(2) + '</span></div>' +
+                        '<div class="flex justify-between"><span>Actual Cash:</span><span>' + currencySymbol + s.actualCash.toFixed(2) + '</span></div>' +
+                        '<div class="flex justify-between font-bold ' + (s.cashDifference < 0 ? 'text-rose-400' : 'text-emerald-400') + '"><span>Difference:</span><span>' + currencySymbol + s.cashDifference.toFixed(2) + '</span></div>';
+                    summaryBox.classList.remove('hidden');
+                }
+
+                currentShiftStatus = (action === 'open') ? 'open' : 'closed';
+                updateShiftIndicator();
+
+                if (action === 'open') {
+                    closeShiftModal();
+                }
+                // On close, leave the modal open so the cashier can read the summary;
+                // they dismiss it with Cancel once done.
+            } catch (e) {
+                errorBox.textContent = 'Network error. Please check your connection and try again.';
+                errorBox.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+            }
         }
 
         // Terminal Lock Handler
@@ -551,7 +963,22 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         }
 
         // Sidebar Navigation Tabs
+        // Responsive fix: closes the mobile sidebar overlay (a no-op on
+        // desktop, where the sidebar is permanently visible via lg:flex
+        // rather than JS-toggled) — called whenever a sidebar nav action is
+        // taken, so picking a view doesn't leave the overlay covering it.
+        function closeMobileSidebarOverlay() {
+            const sb = document.getElementById('pos-sidebar');
+            const backdrop = document.getElementById('pos-sidebar-backdrop');
+            if (sb && !sb.classList.contains('hidden') && window.innerWidth < 1024) {
+                sb.classList.add('hidden');
+                sb.classList.remove('flex');
+                if (backdrop) backdrop.classList.add('hidden');
+            }
+        }
+
         function switchTab(tab) {
+            closeMobileSidebarOverlay();
             currentTab = tab;
             ['register', 'history', 'parked'].forEach(t => {
                 const el = document.getElementById('view-' + t);
@@ -745,10 +1172,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         // Fetch Catalog Products
         async function fetchProducts() {
             try {
-                let url = restUrl + '/products';
-                if (selectedCategory) {
-                    url += '?category=' + encodeURIComponent(selectedCategory);
-                }
+                const params = new URLSearchParams();
+                if (selectedCategory) params.set('category', selectedCategory);
+                if (currentBranchId) params.set('branchId', currentBranchId);
+                let url = restUrl + '/products' + (params.toString() ? '?' + params.toString() : '');
                 const res = await fetch(url, {
                     headers: { 'X-WP-Nonce': restNonce }
                 });
@@ -965,6 +1392,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const container = document.getElementById('cart-items');
             const totalQty = cart.reduce((acc, c) => acc + c.quantity, 0);
             document.getElementById('cart-badge-count').innerText = totalQty + ' item' + (totalQty === 1 ? '' : 's');
+            updateMobileCartToggle();
 
             if (cart.length === 0) {
                 container.innerHTML = '<div class="text-center text-slate-500 text-xs py-16">Cart is empty</div>';
@@ -1000,20 +1428,20 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     ? '<span class="text-[9px] text-amber-400 ml-1">-' + currencySymbol + discount.toFixed(2) + '</span>'
                     : '';
 
-                return '<div class="bg-slate-900 border border-slate-800 p-2.5 rounded-xl flex items-center justify-between text-xs space-x-2">' +
+                return '<div class="bg-slate-900 border border-slate-800 p-3 rounded-xl flex items-center justify-between text-xs space-x-2">' +
                         '<div class="truncate flex-1">' +
                             '<p class="font-bold text-white truncate">' + item.name + stockBadge + '</p>' +
                             '<p class="text-[10px] text-slate-400 font-mono">' + currencySymbol + item.unitPrice.toFixed(2) + ' ea' + discountBadge + '</p>' +
                         '</div>' +
                         '<div class="flex items-center space-x-1.5 shrink-0">' +
                             '<div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">' +
-                                '<button onclick="updateCartQty(\'' + item.key + '\', -1)" class="px-2 py-1 text-slate-300 hover:bg-slate-700 font-extrabold text-xs transition">-</button>' +
+                                '<button onclick="updateCartQty(\'' + item.key + '\', -1)" class="px-2.5 py-1.5 text-slate-300 hover:bg-slate-700 font-extrabold text-xs transition">-</button>' +
                                 '<input type="number" min="1" value="' + item.quantity + '" onchange="setCartQty(\'' + item.key + '\', this.value)" class="w-10 text-center bg-transparent font-mono text-indigo-300 font-bold text-xs focus:outline-none" />' +
-                                '<button onclick="updateCartQty(\'' + item.key + '\', 1)" class="px-2 py-1 text-slate-300 hover:bg-slate-700 font-extrabold text-xs transition">+</button>' +
+                                '<button onclick="updateCartQty(\'' + item.key + '\', 1)" class="px-2.5 py-1.5 text-slate-300 hover:bg-slate-700 font-extrabold text-xs transition">+</button>' +
                             '</div>' +
-                            '<button onclick="openDiscountModal(\'' + item.key + '\')" class="p-1 text-amber-400 hover:text-amber-300 transition" title="Apply Discount">%</button>' +
+                            '<button onclick="openDiscountModal(\'' + item.key + '\')" class="p-1.5 text-amber-400 hover:text-amber-300 transition" title="Apply Discount">%</button>' +
                             '<span class="font-bold text-emerald-400 font-mono w-16 text-right">' + currencySymbol + lineTotal.toFixed(2) + '</span>' +
-                            '<button onclick="removeCartItem(\'' + item.key + '\')" class="text-rose-400 hover:text-rose-300 p-1 font-bold text-sm" title="Remove Item">&times;</button>' +
+                            '<button onclick="removeCartItem(\'' + item.key + '\')" class="text-rose-400 hover:text-rose-300 p-1.5 font-bold text-sm" title="Remove Item">&times;</button>' +
                         '</div>' +
                     '</div>';
             }).join('');
@@ -1082,9 +1510,26 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const lineTotal = item.unitPrice * item.quantity;
             let discountAmt = discountType === 'percent' ? (lineTotal * val / 100) : val;
             discountAmt = Math.min(discountAmt, lineTotal); // can't discount more than line total
-            item.discountAmount = Math.max(0, discountAmt);
+            discountAmt = Math.max(0, discountAmt);
             closeDiscountModal();
-            renderCart();
+
+            if (discountAmt <= 0) {
+                item.discountAmount = 0;
+                renderCart();
+                return;
+            }
+
+            // Bug fix: this previously applied the discount immediately with
+            // no confirmation at all — the manager-PIN modal existed in the
+            // markup but requireManagerPin() was never actually called from
+            // here. The server independently enforces that the logged-in
+            // account holds override_wc_pos_prices (or manage_woocommerce)
+            // before accepting any discount; this PIN step is a deliberate-
+            // intent confirmation on top of that, not a substitute for it.
+            requireManagerPin(function() {
+                item.discountAmount = discountAmt;
+                renderCart();
+            });
         }
 
         // -----------------------------------------------------------------------
@@ -1118,7 +1563,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     if (managerPinCallback) managerPinCallback();
                 } else {
                     document.getElementById('manager-pin-input').value = '';
-                    alert('Incorrect manager PIN.');
+                    alert(data.message || 'Incorrect manager PIN.');
                 }
             } catch(e) {
                 alert('Could not verify PIN. Check connection.');
@@ -1185,6 +1630,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
 
         // Customer Modal
         function openCustomerModal() {
+            closeMobileSidebarOverlay();
             document.getElementById('customer-modal').classList.remove('hidden');
         }
 
@@ -1373,6 +1819,16 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         async function processCheckout() {
             if (cart.length === 0) return;
 
+            // Bug fix: shift status must be enforced before a sale, not just
+            // tracked cosmetically. The server independently rejects any
+            // order for a register with no open shift; this check just gives
+            // a clearer message before the cashier builds out totals/payment
+            // rather than after a failed submission.
+            if (currentShiftStatus !== 'open') {
+                alert('This register does not have an open shift. Open a shift (see the header indicator) before processing sales.');
+                return;
+            }
+
             const subtotal      = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity), 0);
             const totalDiscount = cart.reduce((acc, c) => acc + (c.discountAmount || 0), 0);
             const tax           = taxInclusive ? subtotal - (subtotal / (1 + taxRate)) : (subtotal - totalDiscount) * taxRate;
@@ -1402,7 +1858,8 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const payload = {
                 id:             'POS-' + Date.now(),
                 idempotencyKey: 'POS-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9),
-                registerId:     'REG-MAIN',
+                registerId:     currentRegisterId || 'REG-MAIN',
+                branchId:       currentBranchId || 'default',
                 cashierId:      <?php echo intval( $user->ID ); ?>,
                 cashierName,
                 customerId:     selectedCustomer ? selectedCustomer.id : 0,
@@ -1447,6 +1904,11 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     selectCustomer(null);
                     document.getElementById('pos-order-note').value = '';
                     fetchProducts();
+                    // Responsive fix: on mobile, the cart is a full-screen
+                    // view — after a completed sale, return the cashier to
+                    // the product grid automatically rather than leaving
+                    // them stuck on an empty cart screen.
+                    closeMobileCart();
                 } else {
                     alert('Sale failed: ' + (data.message || 'Unknown error. Please try again.'));
                 }
@@ -1462,9 +1924,19 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         if (pSearch) pSearch.addEventListener('input', renderProducts);
         initTheme();
         updateParkedBadge();
+        updateBranchRegisterLabel();
         loadConfig().then(() => {
             fetchCategories();
             fetchProducts();
+            // Multi-branch feature: nudge the cashier to pick a branch/register
+            // on first use of this terminal. Not forced (no blocking overlay
+            // on every load) — the header indicator stays visible and clicking
+            // it always re-opens the picker if they skip this or need to switch.
+            if (!currentBranchId || !currentRegisterId) {
+                openBranchPicker();
+            } else {
+                refreshShiftStatus();
+            }
         });
 
         // -----------------------------------------------------------------------
@@ -1480,7 +1952,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             if (e.key === 'F9') { e.preventDefault(); if (!document.getElementById('btn-checkout').disabled) processCheckout(); }
             if (e.key === 'Escape') {
                 // Close the topmost visible modal
-                const modals = ['discount-modal', 'manager-pin-modal', 'variation-modal', 'customer-modal'];
+                const modals = ['discount-modal', 'manager-pin-modal', 'variation-modal', 'customer-modal', 'shift-modal-overlay'];
                 for (const id of modals) {
                     const el = document.getElementById(id);
                     if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); break; }

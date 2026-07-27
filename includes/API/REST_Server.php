@@ -80,6 +80,17 @@ class REST_Server {
             'permission_callback' => array( $this, 'check_pos_permission' ),
         ) );
 
+        // Multi-branch feature build-out: lightweight list endpoint so the POS
+        // frontend can populate a register picker for the selected branch.
+        // (Branches themselves are already listable via Branches_Controller's
+        // GET /branches — registering that route again here would collide
+        // with it on the same namespace.)
+        register_rest_route( $namespace, '/registers', array(
+            'methods'             => 'GET',
+            'callback'            => array( $this, 'list_registers' ),
+            'permission_callback' => array( $this, 'check_pos_permission' ),
+        ) );
+
         // Tax Rates — list and upsert POS-specific rates
         register_rest_route( $namespace, '/tax-rates', array(
             'methods'             => 'GET',
@@ -125,7 +136,13 @@ class REST_Server {
     // -------------------------------------------------------------------------
 
     public function check_pos_permission() {
-        return current_user_can( 'read_private_shop_orders' ) || current_user_can( 'manage_woocommerce' );
+        // Wire up the previously-unused 'process_wc_pos_sales' capability
+        // (registered in Permissions.php but never actually checked anywhere)
+        // as the primary gate for terminal/sales operations. Kept additive
+        // with the prior checks so no existing install loses access.
+        return current_user_can( 'process_wc_pos_sales' )
+            || current_user_can( 'read_private_shop_orders' )
+            || current_user_can( 'manage_woocommerce' );
     }
 
     // -------------------------------------------------------------------------
@@ -170,6 +187,13 @@ class REST_Server {
     public function get_products( $request ) {
         $search   = $request->get_param( 's' );
         $category = $request->get_param( 'category' );
+        // Multi-branch feature build-out: optional branch context. When
+        // provided and a product has branch-specific stock allocated (via
+        // wc_pos_branch_stock), that overrides the global stock figure in the
+        // response. Products with no branch allocation still show global
+        // stock, unchanged — this is fully backward compatible.
+        $branch_id = sanitize_text_field( $request->get_param( 'branchId' ) ?? '' );
+        $branch_id = $branch_id ?: null;
         $args = array(
             'limit'  => 100,
             'status' => 'publish',
@@ -229,7 +253,7 @@ class REST_Server {
                     }
 
                     $v_price = (float) $v->get_price() ?: (float) $v->get_regular_price();
-                    $v_stock = $this->resolve_stock( $v );
+                    $v_stock = $this->resolve_stock( $v, null, $branch_id );
 
                     $variations_data[] = array(
                         'id'            => $v->get_id(),
@@ -250,7 +274,7 @@ class REST_Server {
             // availability lives on its variations. resolve_stock() aggregates
             // across variations for 'variable' products and falls back to the
             // product's own fields for everything else.
-            $stock = $this->resolve_stock( $p, $variations_data );
+            $stock = $this->resolve_stock( $p, $variations_data, $branch_id );
 
             $formatted[] = array(
                 'id'            => $p->get_id(),
@@ -278,17 +302,33 @@ class REST_Server {
      * supplied, load the variations directly) and treat the parent as in-stock
      * if at least one variation is in stock or carries positive quantity.
      *
-     * @param WC_Product $product
-     * @param array|null $formatted_variations Optional pre-built variation rows
+     * @param WC_Product  $product
+     * @param array|null  $formatted_variations Optional pre-built variation rows
      *                                          (each with stockQuantity/stockStatus)
      *                                          to avoid re-querying variations.
+     * @param string|null $branch_id Multi-branch feature: when given and a
+     *                                wc_pos_branch_stock row exists for this
+     *                                product/branch, that quantity overrides
+     *                                the global WooCommerce figure. No row =
+     *                                falls through to global stock, unchanged.
      * @return array{status:string, quantity:int|null}
      */
-    private function resolve_stock( $product, $formatted_variations = null ) {
+    private function resolve_stock( $product, $formatted_variations = null, $branch_id = null ) {
         if ( ! $product->is_type( 'variable' ) ) {
+            $status   = $product->get_stock_status() ?: 'instock';
+            $quantity = $product->managing_stock() ? (int) $product->get_stock_quantity() : null;
+
+            $branch_override = $this->get_branch_stock_override( $product, $branch_id );
+            if ( null !== $branch_override ) {
+                $quantity = $branch_override;
+                if ( $product->managing_stock() && ! $product->backorders_allowed() ) {
+                    $status = $branch_override > 0 ? 'instock' : 'outofstock';
+                }
+            }
+
             return array(
-                'status'   => $product->get_stock_status() ?: 'instock',
-                'quantity' => $product->managing_stock() ? (int) $product->get_stock_quantity() : null,
+                'status'   => $status,
+                'quantity' => $quantity,
             );
         }
 
@@ -347,6 +387,30 @@ class REST_Server {
             'status'   => $status,
             'quantity' => $has_qty_data ? $total_qty : null,
         );
+    }
+
+    /**
+     * Multi-branch feature build-out: return the branch-specific stock
+     * quantity for a product if one has been allocated, or null if this
+     * product isn't branch-tracked (caller should keep using global stock).
+     */
+    private function get_branch_stock_override( $product, $branch_id ) {
+        if ( ! $branch_id ) {
+            return null;
+        }
+
+        global $wpdb;
+        $is_variation    = $product->is_type( 'variation' );
+        $bs_product_id   = $is_variation ? $product->get_parent_id() : $product->get_id();
+        $bs_variation_id = $is_variation ? $product->get_id() : 0;
+
+        $table = $wpdb->prefix . 'wc_pos_branch_stock';
+        $qty   = $wpdb->get_var( $wpdb->prepare(
+            "SELECT stock_quantity FROM {$table} WHERE branch_id = %s AND product_id = %d AND variation_id = %d",
+            $branch_id, $bs_product_id, $bs_variation_id
+        ) );
+
+        return null === $qty ? null : (int) $qty;
     }
 
     // -------------------------------------------------------------------------
@@ -575,12 +639,50 @@ class REST_Server {
      *    "notes":        "..."       // optional
      *  }
      */
+    /**
+     * GET /wc-pos/v1/registers?branchId=default
+     * Multi-branch feature build-out: list registers, optionally filtered to
+     * one branch, so the POS terminal can offer a register picker. Registers
+     * themselves are created/managed in wp-admin (POS > Registers).
+     */
+    public function list_registers( $request ) {
+        global $wpdb;
+        $table     = $wpdb->prefix . 'wc_pos_registers';
+        $branch_id = sanitize_text_field( $request->get_param( 'branchId' ) ?? '' );
+
+        if ( $branch_id ) {
+            $rows = $wpdb->get_results( $wpdb->prepare(
+                "SELECT id, name, location, status, branch_id FROM {$table} WHERE branch_id = %s ORDER BY name ASC",
+                $branch_id
+            ) );
+        } else {
+            $rows = $wpdb->get_results( "SELECT id, name, location, status, branch_id FROM {$table} ORDER BY name ASC" );
+        }
+
+        $registers = array();
+        foreach ( $rows as $r ) {
+            $registers[] = array(
+                'id'       => $r->id,
+                'name'     => $r->name,
+                'location' => $r->location,
+                'status'   => $r->status,
+                'branchId' => $r->branch_id,
+            );
+        }
+
+        return rest_ensure_response( $registers );
+    }
+
     public function handle_register_shift( $request ) {
         global $wpdb;
 
         $params      = $request->get_json_params();
         $action      = sanitize_text_field( $params['action'] ?? '' );
         $register_id = sanitize_text_field( $params['registerId'] ?? 'REG-MAIN' );
+        // Multi-branch support: optional, defaults to the seeded "default"
+        // branch so single-location stores (or any request sent before the
+        // frontend has a branch selector) keep working unchanged.
+        $branch_id   = sanitize_text_field( $params['branchId'] ?? 'default' );
         $user        = wp_get_current_user();
 
         if ( ! in_array( $action, array( 'open', 'close' ), true ) ) {
@@ -617,6 +719,7 @@ class REST_Server {
                 array(
                     'id'             => $shift_id,
                     'register_id'    => $register_id,
+                    'branch_id'      => $branch_id,
                     'cashier_id'     => $user->ID,
                     'cashier_name'   => $user->display_name,
                     'opened_at'      => current_time( 'mysql', true ),
@@ -656,10 +759,16 @@ class REST_Server {
         }
 
         // Sum up POS sales created during this shift period.
+        // Bug fix: POS orders now land in "processing" rather than
+        // auto-completing (see SalesEngine::create_pos_order()) — this filter
+        // still looked for "completed" orders only, which meant every shift
+        // close would report zero sales even though the register had real
+        // transactions. Checking both statuses covers orders a staff member
+        // may have manually marked completed afterward too.
         $orders = wc_get_orders( array(
             'created_via' => 'wc_pos_pro',
             'date_after'  => $shift->opened_at,
-            'status'      => array( 'wc-completed' ),
+            'status'      => array( 'wc-processing', 'wc-completed' ),
             'meta_key'    => '_wc_pos_register_id',
             'meta_value'  => $register_id,
             'limit'       => -1,
@@ -739,9 +848,26 @@ class REST_Server {
     // -------------------------------------------------------------------------
 
     /**
+     * Maximum failed PIN attempts allowed before a temporary lockout kicks in.
+     */
+    const PIN_MAX_ATTEMPTS = 5;
+
+    /**
+     * Lockout duration, in seconds, once PIN_MAX_ATTEMPTS is reached.
+     */
+    const PIN_LOCKOUT_SECONDS = 300; // 5 minutes
+
+    /**
      * Verify a cashier's PIN server-side.
      * Payload: { "pin": "1234" }
-     * Returns: { "success": true } or HTTP 401.
+     * Returns: { "success": true } or HTTP 401 / 429.
+     *
+     * Security fix: PINs are 4–8 digits, and the fallback "1234" default is
+     * accepted for any user who hasn't set a personal PIN yet — both of which
+     * make this endpoint brute-forceable with unlimited attempts. This adds a
+     * per-user attempt counter with a temporary lockout once PIN_MAX_ATTEMPTS
+     * is exceeded, tracked in user meta so it survives across requests without
+     * needing a new table.
      */
     public function verify_pin( $request ) {
         $params  = $request->get_json_params();
@@ -751,26 +877,89 @@ class REST_Server {
             return new \WP_REST_Response( array( 'success' => false, 'message' => 'PIN is required.' ), 400 );
         }
 
-        $user_id    = get_current_user_id();
+        $user_id = get_current_user_id();
+
+        $lockout_check = $this->check_pin_lockout( $user_id );
+        if ( is_wp_error( $lockout_check ) ) {
+            return new \WP_REST_Response( array(
+                'success' => false,
+                'message' => $lockout_check->get_error_message(),
+                'lockedOutSeconds' => $lockout_check->get_error_data(),
+            ), 429 );
+        }
+
         $stored_pin = get_user_meta( $user_id, '_wc_pos_pin_hash', true );
 
         // If no PIN has been set yet, accept the default "1234" and prompt setup.
         if ( empty( $stored_pin ) ) {
             if ( '1234' === $raw_pin ) {
+                $this->reset_pin_attempts( $user_id );
                 return rest_ensure_response( array(
                     'success'     => true,
                     'requiresSetup' => true,
                     'message'     => __( 'Default PIN accepted. Please set a personal PIN.', 'wc-pos-pro' ),
                 ) );
             }
+            $this->record_failed_pin_attempt( $user_id );
             return new \WP_REST_Response( array( 'success' => false, 'message' => __( 'Incorrect PIN.', 'wc-pos-pro' ) ), 401 );
         }
 
         if ( wp_check_password( $raw_pin, $stored_pin, $user_id ) ) {
+            $this->reset_pin_attempts( $user_id );
             return rest_ensure_response( array( 'success' => true, 'requiresSetup' => false ) );
         }
 
+        $this->record_failed_pin_attempt( $user_id );
         return new \WP_REST_Response( array( 'success' => false, 'message' => __( 'Incorrect PIN.', 'wc-pos-pro' ) ), 401 );
+    }
+
+    /**
+     * Returns a WP_Error (with seconds-remaining as error data) if this user is
+     * currently locked out, or true if they're clear to attempt verification.
+     */
+    private function check_pin_lockout( $user_id ) {
+        $locked_until = (int) get_user_meta( $user_id, '_wc_pos_pin_locked_until', true );
+
+        if ( $locked_until && $locked_until > time() ) {
+            $remaining = $locked_until - time();
+            return new \WP_Error(
+                'pin_locked_out',
+                sprintf(
+                    /* translators: %d: seconds remaining */
+                    __( 'Too many incorrect PIN attempts. Try again in %d seconds.', 'wc-pos-pro' ),
+                    $remaining
+                ),
+                $remaining
+            );
+        }
+
+        return true;
+    }
+
+    /**
+     * Increment the failed-attempt counter for a user and, once
+     * PIN_MAX_ATTEMPTS is reached, set a lockout timestamp and reset the
+     * counter so the next window starts clean.
+     */
+    private function record_failed_pin_attempt( $user_id ) {
+        $attempts = (int) get_user_meta( $user_id, '_wc_pos_pin_failed_attempts', true ) + 1;
+
+        if ( $attempts >= self::PIN_MAX_ATTEMPTS ) {
+            update_user_meta( $user_id, '_wc_pos_pin_locked_until', time() + self::PIN_LOCKOUT_SECONDS );
+            update_user_meta( $user_id, '_wc_pos_pin_failed_attempts', 0 );
+            return;
+        }
+
+        update_user_meta( $user_id, '_wc_pos_pin_failed_attempts', $attempts );
+    }
+
+    /**
+     * Clear the failed-attempt counter and any active lockout for a user,
+     * called after a successful PIN verification or a PIN change.
+     */
+    private function reset_pin_attempts( $user_id ) {
+        delete_user_meta( $user_id, '_wc_pos_pin_failed_attempts' );
+        delete_user_meta( $user_id, '_wc_pos_pin_locked_until' );
     }
 
     /**
@@ -793,6 +982,9 @@ class REST_Server {
         $pin_hash   = wp_hash_password( $raw_pin );
         update_user_meta( $user_id, '_wc_pos_pin_hash', $pin_hash );
 
+        // A PIN change is also a clean slate for the lockout counter.
+        $this->reset_pin_attempts( $user_id );
+
         return rest_ensure_response( array(
             'success' => true,
             'message' => __( 'PIN updated successfully.', 'wc-pos-pro' ),
@@ -807,7 +999,11 @@ class REST_Server {
      * Managers-only gate: used for mutating tax rates and other privileged ops.
      */
     public function check_manager_permission() {
-        return current_user_can( 'manage_woocommerce' );
+        // Wire up the previously-unused 'manage_wc_pos' capability as an
+        // alternative to full 'manage_woocommerce' — lets a store grant
+        // POS-management access to a custom role without full WooCommerce
+        // admin rights.
+        return current_user_can( 'manage_wc_pos' ) || current_user_can( 'manage_woocommerce' );
     }
 
     // -------------------------------------------------------------------------

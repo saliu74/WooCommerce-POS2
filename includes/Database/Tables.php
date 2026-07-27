@@ -133,21 +133,7 @@ class Tables {
             KEY destination_branch_id (destination_branch_id)
         ) $charset_collate;";
 
-        // 7. Gift Cards Table
-        $table_gift_cards = $wpdb->prefix . 'wc_pos_gift_cards';
-        $sql_gift_cards   = "CREATE TABLE $table_gift_cards (
-            id varchar(64) NOT NULL,
-            code varchar(100) NOT NULL,
-            initial_balance decimal(12,2) NOT NULL,
-            current_balance decimal(12,2) NOT NULL,
-            status varchar(32) DEFAULT 'active',
-            expiry_date datetime DEFAULT NULL,
-            created_at datetime DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY  (id),
-            UNIQUE KEY code (code)
-        ) $charset_collate;";
-
-        // 8. POS Tax Rates Table
+        // 6. POS Tax Rates Table
         $table_tax_rates = $wpdb->prefix . 'wc_pos_tax_rates';
         $sql_tax_rates   = "CREATE TABLE $table_tax_rates (
             id int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -170,7 +156,6 @@ class Tables {
         dbDelta( $sql_shifts );
         dbDelta( $sql_logs );
         dbDelta( $sql_transfers );
-        dbDelta( $sql_gift_cards );
         dbDelta( $sql_tax_rates );
     }
 }
