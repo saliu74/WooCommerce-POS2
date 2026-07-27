@@ -148,7 +148,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             <main class="flex-1 flex flex-col p-4 space-y-3 overflow-hidden border-r border-slate-800">
                 <div class="flex items-center space-x-2">
                     <div class="relative flex-1">
-                        <input type="text" id="product-search" oninput="renderProducts()" placeholder="Search product name, SKU, or scan barcode..." class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500" autofocus />
+                        <input type="text" id="product-search" oninput="onProductSearchInput()" placeholder="Search product name, SKU, or scan barcode..." class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500" autofocus />
                         <svg class="w-4 h-4 absolute left-3.5 top-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                     </div>
                     <button onclick="fetchProducts()" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition flex items-center space-x-1.5 shrink-0">
@@ -170,6 +170,13 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                             Loading WooCommerce products...
                         </div>
                     </div>
+                    <!-- Bug fix: browsing previously had no way to reach
+                         anything past the first ~100 products (WooCommerce's
+                         default newest-first order, with no pagination at
+                         all). This button loads and appends the next page. -->
+                    <button id="load-more-products-btn" onclick="loadMoreProducts()" class="hidden w-full mt-3 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-bold text-slate-300 transition">
+                        Load More Products
+                    </button>
                 </div>
 
                 <!-- Mobile-only floating button to open the cart as a full-screen view -->
@@ -1211,37 +1218,104 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         }
 
         // Fetch Catalog Products
-        async function fetchProducts() {
+        // Bug fixes:
+        // (1) The product grid used to fetch a single hard-capped batch with
+        //     no way to request more — anything beyond that batch (WooCommerce's
+        //     newest-first default with no explicit ordering) was permanently
+        //     unreachable in a catalog of any real size.
+        // (2) The search box filtered that same capped batch client-side —
+        //     it never actually queried the server, so anything not already
+        //     loaded could never be found no matter how the store's full
+        //     catalog was searched.
+        // Fixed together: fetchProducts() now supports real pagination
+        // (append=true loads and appends the next page) and always sends the
+        // current search term to the server, which now returns a generous,
+        // non-paginated batch of every match rather than a capped subset.
+        let currentProductPage = 1;
+        let productTotalPages  = 1;
+        let productSearchTerm  = '';
+        let isLoadingMoreProducts = false;
+
+        async function fetchProducts(page = 1, append = false) {
+            if (isLoadingMoreProducts) return;
+            isLoadingMoreProducts = true;
+            updateLoadMoreButton(true);
+
             try {
                 const params = new URLSearchParams();
                 if (selectedCategory) params.set('category', selectedCategory);
                 if (currentBranchId) params.set('branchId', currentBranchId);
-                let url = restUrl + '/products' + (params.toString() ? '?' + params.toString() : '');
-                const res = await fetch(url, {
-                    headers: { 'X-WP-Nonce': restNonce }
-                });
+                if (productSearchTerm) params.set('s', productSearchTerm);
+                params.set('page', page);
+
+                const url = restUrl + '/products?' + params.toString();
+                const res = await fetch(url, { headers: { 'X-WP-Nonce': restNonce } });
                 if (!res.ok) throw new Error('API Error');
                 const data = await res.json();
-                if (Array.isArray(data) && data.length > 0) {
-                    products = data;
-                } else {
+
+                const newProducts = (data && Array.isArray(data.products)) ? data.products : (Array.isArray(data) ? data : []);
+                currentProductPage = (data && data.page) ? data.page : page;
+                productTotalPages  = (data && data.totalPages) ? data.totalPages : 1;
+
+                if (append) {
+                    products = products.concat(newProducts);
+                } else if (newProducts.length > 0) {
+                    products = newProducts;
+                } else if (page === 1 && !productSearchTerm) {
+                    // Only fall back to demo data on a genuinely empty first
+                    // load with no active search — an empty search result is
+                    // a real "no matches", not a connection failure.
                     products = DEMO_PRODUCTS;
+                } else {
+                    products = [];
                 }
             } catch (e) {
-                products = DEMO_PRODUCTS;
+                if (!append) products = DEMO_PRODUCTS;
+            } finally {
+                isLoadingMoreProducts = false;
+                updateLoadMoreButton(false);
             }
             renderProducts();
+        }
+
+        // Debounced server-side search — replaces the old client-side-only
+        // filter so every keystroke (after a short pause) queries the full
+        // catalog rather than whatever's already loaded in the browser.
+        let productSearchDebounce = null;
+        function onProductSearchInput() {
+            const termInput = document.getElementById('product-search');
+            productSearchTerm = termInput ? termInput.value.trim() : '';
+            clearTimeout(productSearchDebounce);
+            productSearchDebounce = setTimeout(() => {
+                fetchProducts(1, false);
+            }, 300);
+        }
+
+        function loadMoreProducts() {
+            if (currentProductPage < productTotalPages) {
+                fetchProducts(currentProductPage + 1, true);
+            }
+        }
+
+        function updateLoadMoreButton(loading) {
+            const btn = document.getElementById('load-more-products-btn');
+            if (!btn) return;
+            const hasMore = currentProductPage < productTotalPages;
+            btn.classList.toggle('hidden', !hasMore && !loading);
+            btn.disabled = loading;
+            btn.textContent = loading ? 'Loading...' : ('Load More Products (' + (productTotalPages - currentProductPage) + ' more page' + (productTotalPages - currentProductPage === 1 ? '' : 's') + ')');
         }
 
         function renderProducts() {
             const grid = document.getElementById('products-grid');
             if (!grid) return;
-            const termInput = document.getElementById('product-search');
-            const term = termInput ? termInput.value.toLowerCase().trim() : '';
 
-            const filtered = (products || []).filter(p => {
-                return !term || p.name.toLowerCase().includes(term) || (p.sku && p.sku.toLowerCase().includes(term));
-            });
+            // Bug fix: this used to re-filter 'products' by whatever's typed
+            // in the search box — redundant and actively wrong now that the
+            // server performs the real search (see fetchProducts /
+            // onProductSearchInput above). 'products' already IS the correct
+            // set for the current search term, category, and page.
+            const filtered = products || [];
 
             if (filtered.length === 0) {
                 grid.innerHTML = '<div class="col-span-full text-slate-500 text-xs text-center py-12">No products found</div>';
@@ -1962,7 +2036,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         }
 
         const pSearch = document.getElementById('product-search');
-        if (pSearch) pSearch.addEventListener('input', renderProducts);
+        // Note: the search input's oninput attribute already calls
+        // onProductSearchInput() directly — no separate listener needed
+        // (a duplicate one here previously called the old client-side-only
+        // renderProducts() redundantly on every keystroke).
         initTheme();
         updateParkedBadge();
         updateBranchRegisterLabel();

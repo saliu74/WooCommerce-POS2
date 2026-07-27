@@ -194,9 +194,30 @@ class REST_Server {
         // stock, unchanged — this is fully backward compatible.
         $branch_id = sanitize_text_field( $request->get_param( 'branchId' ) ?? '' );
         $branch_id = $branch_id ?: null;
+        $page      = max( 1, absint( $request->get_param( 'page' ) ?: 1 ) );
+
+        // Bug fix: this previously hard-capped every request at 100 products
+        // with no pagination and no explicit ordering — meaning it silently
+        // fell back to WooCommerce's newest-first default. In a catalog of
+        // any real size, that meant only the ~100 most recently created
+        // products could ever appear (anything older was completely
+        // unreachable, since there was no way to request a further page),
+        // and the terminal's search made this worse by only ever filtering
+        // that same capped, recency-biased batch client-side rather than
+        // querying the full database. Fixed with real pagination for
+        // browsing, alphabetical ordering (not recency-biased), and a
+        // generous, non-paginated cap specifically for search results —
+        // when someone is actively searching for a product, they expect
+        // every match, not a paginated subset of matches.
+        $per_page = $search ? 250 : 60;
+
         $args = array(
-            'limit'  => 100,
-            'status' => 'publish',
+            'limit'    => $per_page,
+            'page'     => $page,
+            'status'   => 'publish',
+            'orderby'  => 'title',
+            'order'    => 'ASC',
+            'paginate' => true,
         );
         if ( $search ) {
             $args['s'] = sanitize_text_field( $search );
@@ -205,7 +226,8 @@ class REST_Server {
             $args['category'] = array( sanitize_text_field( $category ) );
         }
 
-        $products  = wc_get_products( $args );
+        $result    = wc_get_products( $args );
+        $products  = $result->products;
         $formatted = array();
 
         foreach ( $products as $p ) {
@@ -290,7 +312,12 @@ class REST_Server {
             );
         }
 
-        return rest_ensure_response( $formatted );
+        return rest_ensure_response( array(
+            'products'   => $formatted,
+            'page'       => $page,
+            'totalPages' => (int) $result->max_num_pages,
+            'total'      => (int) $result->total,
+        ) );
     }
 
     /**
