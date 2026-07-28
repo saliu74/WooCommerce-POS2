@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce POS Pro (Enterprise Edition)
  * Plugin URI: https://github.com/saliu75/WooCommerce-pos-pro/
  * Description: Enterprise-grade, atomic inventory protected Point of Sale system built specifically for WooCommerce.
- * Version: 1.5.2
+ * Version: 1.6.2
  * Author: Muideen Saliu
  * Author URI: https://github.com/saliu74
  * License: GPL-2.0+
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
 
-define( 'WC_POS_VERSION', '1.5.2' );
+define( 'WC_POS_VERSION', '1.6.2' );
 define( 'WC_POS_FILE', __FILE__ );
 define( 'WC_POS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WC_POS_URL', plugin_dir_url( __FILE__ ) );

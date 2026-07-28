@@ -165,14 +165,45 @@ class SalesEngine {
             return $shift_check;
         }
 
+        // --- Whole-order discount pre-check (separate from the per-item
+        // discount feature above, which stays unchanged) ---
+        // Three modes, mirroring the flexibility already offered per-item:
+        //  - 'coupon': a real WooCommerce coupon code — self-authorizing
+        //    (the code itself is the authorization; no manager gate needed).
+        //  - 'percent' / 'fixed': an ad-hoc whole-order discount typed in at
+        //    checkout — this is the same kind of arbitrary judgment call as
+        //    a per-item discount, so it's held to the same authorization
+        //    bar (checked together with per-item discounts below).
+        // Checked before any stock is touched, so an invalid/expired/
+        // exhausted coupon (or an unauthorized manual discount) can never
+        // leave stock deducted with nothing to show for it.
+        $order_discount = is_array( $payload['orderDiscount'] ?? null ) ? $payload['orderDiscount'] : null;
+        $discount_mode   = $order_discount ? sanitize_text_field( $order_discount['mode'] ?? '' ) : '';
+        $coupon_code     = ( 'coupon' === $discount_mode ) ? sanitize_text_field( $order_discount['code'] ?? '' ) : '';
+        $manual_value    = ( in_array( $discount_mode, array( 'percent', 'fixed' ), true ) ) ? floatval( $order_discount['value'] ?? 0 ) : 0;
+
+        if ( $coupon_code ) {
+            $coupon_subtotal = 0.0;
+            foreach ( $payload['items'] as $item_data ) {
+                $coupon_subtotal += ( floatval( $item_data['unitPrice'] ) * intval( $item_data['quantity'] ) )
+                    - floatval( $item_data['discountTotal'] ?? 0 );
+            }
+            $coupon_check = self::validate_coupon_code( $coupon_code, $coupon_subtotal );
+            if ( is_wp_error( $coupon_check ) ) {
+                return $coupon_check;
+            }
+        }
+
         // --- Server-side discount authorization ---
-        // Any non-zero discount requires the account processing the sale to
-        // hold 'override_wc_pos_prices' (or 'manage_woocommerce'). The
-        // terminal's "manager PIN" confirmation is a UI friction step for the
-        // currently logged-in account — it does not establish a separate
-        // manager identity — so the real authorization boundary has to be
-        // this capability check, not the PIN alone.
-        $discount_check = self::check_discount_authorization( $payload['items'] );
+        // Any non-zero per-item discount OR a manual (percent/fixed)
+        // whole-order discount requires the account processing the sale to
+        // hold 'override_wc_pos_prices' (or 'manage_woocommerce'). A coupon
+        // code is deliberately NOT included here — see above. The
+        // terminal's "manager PIN" confirmation is a UI friction step for
+        // the currently logged-in account — it does not establish a
+        // separate manager identity — so the real authorization boundary
+        // has to be this capability check, not the PIN alone.
+        $discount_check = self::check_discount_authorization( $payload['items'], $manual_value > 0 );
         if ( is_wp_error( $discount_check ) ) {
             return $discount_check;
         }
@@ -270,6 +301,62 @@ class SalesEngine {
 
         $order->set_payment_method( 'wc_pos_custom' );
         $order->set_payment_method_title( __( 'POS In-Person Payment', 'wc-pos-pro' ) );
+
+        // Apply the whole-order discount now that all line items exist —
+        // WooCommerce calculates the actual amounts against whatever's on
+        // the order when calculate_totals() runs next, so this must happen
+        // before that call.
+        if ( $coupon_code ) {
+            $coupon_applied = $order->apply_coupon( $coupon_code );
+            if ( is_wp_error( $coupon_applied ) ) {
+                // Stock has already been deducted at this point. Rather than
+                // reversing it (a real risk of its own) over what should be
+                // an extremely rare race, complete the sale without the
+                // coupon and leave a clear, auditable note rather than
+                // silently dropping it.
+                $order->add_order_note( sprintf(
+                    /* translators: 1: coupon code, 2: error message */
+                    __( 'Coupon "%1$s" could not be applied at final checkout and was skipped: %2$s', 'wc-pos-pro' ),
+                    $coupon_code,
+                    $coupon_applied->get_error_message()
+                ) );
+            }
+        } elseif ( $manual_value > 0 && in_array( $discount_mode, array( 'percent', 'fixed' ), true ) ) {
+            // Manual whole-order percentage/fixed discount — there's no
+            // WooCommerce coupon entity behind this, so it's applied as a
+            // negative fee line item (the standard WC approach for an
+            // ad-hoc order-level adjustment). Already authorized above via
+            // check_discount_authorization().
+            $order_subtotal = 0.0;
+            foreach ( $order->get_items() as $line_item ) {
+                $order_subtotal += (float) $line_item->get_total();
+            }
+
+            if ( 'percent' === $discount_mode ) {
+                $discount_amount = $order_subtotal * ( min( $manual_value, 100 ) / 100 );
+                $fee_label       = sprintf(
+                    /* translators: %s: discount percentage */
+                    __( 'Order Discount (%s%%)', 'wc-pos-pro' ),
+                    $manual_value
+                );
+            } else {
+                $discount_amount = $manual_value;
+                $fee_label       = __( 'Order Discount (Fixed)', 'wc-pos-pro' );
+            }
+
+            // Never let a fixed discount exceed what's actually in the cart.
+            $discount_amount = min( $discount_amount, $order_subtotal );
+
+            if ( $discount_amount > 0 ) {
+                $fee = new \WC_Order_Item_Fee();
+                $fee->set_name( $fee_label );
+                $fee->set_amount( -$discount_amount );
+                $fee->set_total( -$discount_amount );
+                $fee->set_tax_status( 'none' );
+                $order->add_item( $fee );
+            }
+        }
+
         $order->calculate_totals();
 
         // Mark completed only after stock is confirmed deducted.
@@ -371,12 +458,14 @@ class SalesEngine {
      * account) is the way to get true per-person authorization; that's a
      * bigger change than this capability wiring and isn't done here.
      */
-    private static function check_discount_authorization( $items ) {
-        $has_discount = false;
-        foreach ( $items as $item_data ) {
-            if ( floatval( $item_data['discountTotal'] ?? 0 ) > 0 ) {
-                $has_discount = true;
-                break;
+    private static function check_discount_authorization( $items, $has_manual_order_discount = false ) {
+        $has_discount = $has_manual_order_discount;
+        if ( ! $has_discount ) {
+            foreach ( $items as $item_data ) {
+                if ( floatval( $item_data['discountTotal'] ?? 0 ) > 0 ) {
+                    $has_discount = true;
+                    break;
+                }
             }
         }
 
@@ -392,6 +481,67 @@ class SalesEngine {
         }
 
         return true;
+    }
+
+    /**
+     * Validate a coupon code against the core checks WooCommerce itself
+     * applies (existence, status, expiry, usage limit, min/max spend).
+     * Shared between the pre-flight check in create_pos_order() and
+     * REST_Server's coupon preview endpoint, so the "does this coupon look
+     * valid" logic only lives in one place. Returns the WC_Coupon object on
+     * success, or a WP_Error describing exactly why it isn't usable.
+     *
+     * This is a best-effort check for fast, friendly UI feedback — the
+     * authoritative check is WooCommerce's own $order->apply_coupon(),
+     * called later once the coupon is actually applied to a real order.
+     */
+    public static function validate_coupon_code( $code, $subtotal ) {
+        $coupon_id = wc_get_coupon_id_by_code( $code );
+        if ( ! $coupon_id ) {
+            return new \WP_Error( 'coupon_not_found', __( 'Coupon code not found.', 'wc-pos-pro' ) );
+        }
+
+        if ( 'publish' !== get_post_status( $coupon_id ) ) {
+            return new \WP_Error( 'coupon_inactive', __( 'This coupon is no longer active.', 'wc-pos-pro' ) );
+        }
+
+        $coupon = new \WC_Coupon( $code );
+
+        $expiry = $coupon->get_date_expires();
+        if ( $expiry && $expiry->getTimestamp() < time() ) {
+            return new \WP_Error( 'coupon_expired', __( 'This coupon has expired.', 'wc-pos-pro' ) );
+        }
+
+        $usage_limit = $coupon->get_usage_limit();
+        if ( $usage_limit && $coupon->get_usage_count() >= $usage_limit ) {
+            return new \WP_Error( 'coupon_usage_limit', __( 'This coupon has reached its usage limit.', 'wc-pos-pro' ) );
+        }
+
+        $min_amount = floatval( $coupon->get_minimum_amount() );
+        if ( $min_amount && $subtotal < $min_amount ) {
+            return new \WP_Error(
+                'coupon_min_spend',
+                sprintf(
+                    /* translators: %s: formatted minimum spend amount */
+                    __( 'This coupon requires a minimum spend of %s.', 'wc-pos-pro' ),
+                    wc_price( $min_amount )
+                )
+            );
+        }
+
+        $max_amount = floatval( $coupon->get_maximum_amount() );
+        if ( $max_amount && $subtotal > $max_amount ) {
+            return new \WP_Error(
+                'coupon_max_spend',
+                sprintf(
+                    /* translators: %s: formatted maximum spend amount */
+                    __( 'This coupon can only be used on orders up to %s.', 'wc-pos-pro' ),
+                    wc_price( $max_amount )
+                )
+            );
+        }
+
+        return $coupon;
     }
 
     /**

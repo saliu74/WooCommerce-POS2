@@ -91,6 +91,17 @@ class REST_Server {
             'permission_callback' => array( $this, 'check_pos_permission' ),
         ) );
 
+        // Whole-order coupon discount (separate from the per-item discount
+        // feature, which remains manager-PIN/capability gated). Applying a
+        // coupon is a standard cashier-level checkout action — the code
+        // itself is the authorization (a cashier can't apply a coupon they
+        // don't know), unlike an arbitrary discretionary discount.
+        register_rest_route( $namespace, '/coupons/validate', array(
+            'methods'             => 'POST',
+            'callback'            => array( $this, 'validate_coupon' ),
+            'permission_callback' => array( $this, 'check_pos_permission' ),
+        ) );
+
         // Tax Rates — list and upsert POS-specific rates
         register_rest_route( $namespace, '/tax-rates', array(
             'methods'             => 'GET',
@@ -700,6 +711,56 @@ class REST_Server {
         return rest_ensure_response( $registers );
     }
 
+    /**
+     * POST /wc-pos/v1/coupons/validate
+     * Best-effort preview of a coupon code against the current cart
+     * subtotal — reuses SalesEngine's shared validation so the frontend and
+     * the actual order-creation step agree on what counts as valid. Returns
+     * an estimated discount amount for display; the authoritative amount is
+     * whatever WooCommerce computes when the coupon is actually applied to
+     * the order at checkout.
+     */
+    public function validate_coupon( $request ) {
+        $params   = $request->get_json_params();
+        $code     = sanitize_text_field( $params['code'] ?? '' );
+        $subtotal = floatval( $params['subtotal'] ?? 0 );
+
+        if ( empty( $code ) ) {
+            return new \WP_REST_Response( array( 'success' => false, 'message' => __( 'Enter a coupon code.', 'wc-pos-pro' ) ), 400 );
+        }
+
+        $result = \WCPOS\Orders\SalesEngine::validate_coupon_code( $code, $subtotal );
+        if ( is_wp_error( $result ) ) {
+            return new \WP_REST_Response( array( 'success' => false, 'message' => $result->get_error_message() ), 400 );
+        }
+
+        $coupon          = $result;
+        $discount_type   = $coupon->get_discount_type();
+        $coupon_amount   = floatval( $coupon->get_amount() );
+        $discount_amount = 0.0;
+
+        if ( 'percent' === $discount_type ) {
+            $discount_amount = $subtotal * ( $coupon_amount / 100 );
+        } else {
+            // fixed_cart and fixed_product coupons both carry a flat amount;
+            // fixed_product coupons don't map perfectly onto a whole-cart
+            // preview without full line-item application, so this figure is
+            // a reasonable estimate — the real amount is computed by
+            // WooCommerce itself when the coupon is actually applied.
+            $discount_amount = $coupon_amount;
+        }
+
+        $discount_amount = min( $discount_amount, $subtotal );
+
+        return rest_ensure_response( array(
+            'success'        => true,
+            'code'           => $coupon->get_code(),
+            'discountType'   => $discount_type,
+            'discountAmount' => round( $discount_amount, 2 ),
+            'message'        => __( 'Coupon applied.', 'wc-pos-pro' ),
+        ) );
+    }
+
     public function handle_register_shift( $request ) {
         global $wpdb;
 
@@ -995,18 +1056,51 @@ class REST_Server {
      * PIN must be 4–8 numeric digits.
      */
     public function set_pin( $request ) {
-        $params  = $request->get_json_params();
-        $raw_pin = sanitize_text_field( $params['pin'] ?? '' );
+        $params      = $request->get_json_params();
+        $raw_pin     = sanitize_text_field( $params['pin'] ?? '' );
+        $current_pin = sanitize_text_field( $params['currentPin'] ?? '' );
 
         if ( ! preg_match( '/^\d{4,8}$/', $raw_pin ) ) {
             return new \WP_REST_Response( array(
                 'success' => false,
-                'message' => __( 'PIN must be 4 to 8 numeric digits.', 'wc-pos-pro' ),
+                'message' => __( 'New PIN must be 4 to 8 numeric digits.', 'wc-pos-pro' ),
             ), 400 );
         }
 
-        $user_id    = get_current_user_id();
-        $pin_hash   = wp_hash_password( $raw_pin );
+        $user_id = get_current_user_id();
+
+        // Security fix: this previously set a new PIN with no verification
+        // of the existing one at all — anyone at an unlocked, logged-in
+        // terminal could silently change another cashier's PIN, locking
+        // them out of their own account. A voluntary PIN change now
+        // requires re-entering the current PIN first (rate-limited the same
+        // way as normal PIN verification). The one-time forced setup right
+        // after a successful default-PIN unlock passes '1234' as the
+        // current PIN automatically — see unlockTerminal() — since that
+        // flow already just verified it moments before.
+        $lockout_check = $this->check_pin_lockout( $user_id );
+        if ( is_wp_error( $lockout_check ) ) {
+            return new \WP_REST_Response( array(
+                'success'          => false,
+                'message'          => $lockout_check->get_error_message(),
+                'lockedOutSeconds' => $lockout_check->get_error_data(),
+            ), 429 );
+        }
+
+        $stored_pin         = get_user_meta( $user_id, '_wc_pos_pin_hash', true );
+        $current_pin_valid  = empty( $stored_pin )
+            ? ( '1234' === $current_pin )
+            : wp_check_password( $current_pin, $stored_pin, $user_id );
+
+        if ( ! $current_pin_valid ) {
+            $this->record_failed_pin_attempt( $user_id );
+            return new \WP_REST_Response( array(
+                'success' => false,
+                'message' => __( 'Current PIN is incorrect.', 'wc-pos-pro' ),
+            ), 401 );
+        }
+
+        $pin_hash = wp_hash_password( $raw_pin );
         update_user_meta( $user_id, '_wc_pos_pin_hash', $pin_hash );
 
         // A PIN change is also a clean slate for the lockout counter.

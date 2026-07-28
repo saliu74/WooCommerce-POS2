@@ -97,6 +97,11 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 <svg id="theme-icon-moon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
             </button>
 
+            <!-- Change PIN -->
+            <button onclick="openChangePinModal()" class="shrink-0 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Change My PIN">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 11-12 0 6 6 0 0112 0zM12 15v6m-3-3h6"></path></svg>
+            </button>
+
             <!-- Lock Terminal -->
             <button onclick="lockTerminal()" class="shrink-0 p-2 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 transition text-xs flex items-center space-x-1" title="Lock Register">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
@@ -258,7 +263,41 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                             <div class="flex justify-between text-amber-400" id="cart-discount-row" style="display:none !important;">
                                 <span>Discount:</span><span id="cart-discount-total" class="font-mono">-$0.00</span>
                             </div>
+                            <div class="flex justify-between text-emerald-400 hidden" id="cart-coupon-row">
+                                <span id="cart-coupon-label">Coupon:</span><span id="cart-coupon-total" class="font-mono">-$0.00</span>
+                            </div>
                             <div class="flex justify-between text-slate-400"><span id="cart-tax-label">Tax (Est.):</span><span id="cart-tax" class="font-mono">$0.00</span></div>
+                        </div>
+
+                        <!-- Whole-order discount (separate from the per-item
+                             % discount above). Three modes, mirroring the
+                             flexibility of the per-item discount: a real
+                             coupon code, or a manual percentage/fixed amount
+                             — the latter two require manager PIN + the
+                             override_wc_pos_prices capability, same as a
+                             per-item discount, since a coupon code is
+                             self-authorizing but an arbitrary percentage or
+                             amount typed in at checkout is not. -->
+                        <div class="space-y-1.5" id="order-discount-section">
+                            <label class="text-slate-400 text-[11px]">Order Discount</label>
+                            <div class="grid grid-cols-3 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-[11px]" id="order-discount-mode-tabs">
+                                <button onclick="setOrderDiscountMode('coupon')" id="odmode-btn-coupon" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold transition">Coupon</button>
+                                <button onclick="setOrderDiscountMode('percent')" id="odmode-btn-percent" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold transition">Percent %</button>
+                                <button onclick="setOrderDiscountMode('fixed')" id="odmode-btn-fixed" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold transition">Fixed Amt</button>
+                            </div>
+
+                            <div class="flex space-x-1.5" id="order-discount-input-row">
+                                <input type="text" id="coupon-code-input" placeholder="e.g. SAVE10"
+                                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 uppercase" />
+                                <input type="number" id="order-discount-value-input" min="0" step="0.01" placeholder="0"
+                                    class="hidden flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500" />
+                                <button onclick="applyOrderDiscount()" id="order-discount-apply-btn" class="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold rounded-lg transition">Apply</button>
+                            </div>
+                            <div class="hidden items-center justify-between bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-2.5 py-1.5" id="coupon-applied-row">
+                                <span class="text-[11px] text-emerald-400 font-bold" id="coupon-applied-label"></span>
+                                <button onclick="removeCouponCode()" class="text-rose-400 hover:text-rose-300 text-xs font-bold">Remove</button>
+                            </div>
+                            <p class="hidden text-[11px] text-rose-400" id="coupon-error"></p>
                         </div>
 
                         <!-- Payment Method Tabs -->
@@ -552,6 +591,29 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         </div>
     </div>
 
+    <!-- OVERLAY: Change My PIN (self-service) -->
+    <div id="change-pin-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xs p-6 space-y-4 shadow-2xl">
+            <div class="text-center">
+                <h3 class="font-bold text-white">Change My PIN</h3>
+                <p class="text-xs text-slate-400 mt-1">Requires your current PIN.</p>
+            </div>
+            <div class="space-y-2">
+                <input type="password" id="change-pin-current" placeholder="Current PIN" autocomplete="off"
+                    class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-center font-mono text-white text-sm focus:outline-none focus:border-indigo-500" />
+                <input type="password" id="change-pin-new" placeholder="New PIN (4–8 digits)" autocomplete="off"
+                    class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-center font-mono text-white text-sm focus:outline-none focus:border-indigo-500" />
+                <input type="password" id="change-pin-confirm" placeholder="Confirm New PIN" autocomplete="off"
+                    class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-center font-mono text-white text-sm focus:outline-none focus:border-indigo-500" />
+            </div>
+            <div id="change-pin-error" class="hidden text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-lg px-3 py-2"></div>
+            <div class="flex space-x-2">
+                <button onclick="closeChangePinModal()" class="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs py-3 rounded-xl transition">CANCEL</button>
+                <button onclick="submitChangePin()" id="change-pin-submit-btn" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-extrabold text-xs py-3 rounded-xl transition">SAVE</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const restUrl = '<?php echo esc_js( $rest_url ); ?>';
         const restNonce = '<?php echo esc_js( $rest_nonce ); ?>';
@@ -578,6 +640,9 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         let categories = [];
         let selectedCategory = null;
         let cart = [];
+        // Whole-order coupon discount (separate from per-item discounts).
+        // { code, discountType, discountAmount } once successfully applied.
+        let appliedOrderDiscount = null;
         let selectedCustomer = null;
         let selectedPaymentMethod = 'cash';
         let parkedCarts = JSON.parse(localStorage.getItem('wc_pos_parked_carts') || '[]');
@@ -993,7 +1058,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                             await fetch(restUrl + '/pin/set', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
-                                body: JSON.stringify({ pin: newPin })
+                                body: JSON.stringify({ pin: newPin, currentPin: '1234' })
                             });
                             alert('PIN updated successfully.');
                         }
@@ -1516,6 +1581,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 document.getElementById('cart-tax').innerText = currencySymbol + '0.00';
                 document.getElementById('cart-total').innerText = currencySymbol + '0.00';
                 document.getElementById('cart-discount-row').style.display = 'none';
+                document.getElementById('cart-coupon-row').classList.add('hidden');
                 return;
             }
 
@@ -1561,8 +1627,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     '</div>';
             }).join('');
 
-            const tax      = taxInclusive ? subtotal - (subtotal / (1 + taxRate)) : (subtotal - totalDiscount) * taxRate;
-            const grandTotal = taxInclusive ? subtotal - totalDiscount : (subtotal - totalDiscount) + tax;
+            const couponDiscount = appliedOrderDiscount ? Math.min(appliedOrderDiscount.discountAmount, subtotal - totalDiscount) : 0;
+            const netSubtotal = subtotal - totalDiscount - couponDiscount;
+            const tax      = taxInclusive ? netSubtotal - (netSubtotal / (1 + taxRate)) : netSubtotal * taxRate;
+            const grandTotal = taxInclusive ? netSubtotal : netSubtotal + tax;
 
             document.getElementById('cart-subtotal').innerText = currencySymbol + subtotal.toFixed(2);
             document.getElementById('cart-tax').innerText      = currencySymbol + tax.toFixed(2) + (taxRate > 0 ? ' (' + (taxRate * 100).toFixed(1) + '%)' : '');
@@ -1577,14 +1645,174 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 document.getElementById('cart-discount-row').style.display = 'none';
             }
 
+            // Coupon row
+            if (appliedOrderDiscount && couponDiscount > 0) {
+                document.getElementById('cart-coupon-row').classList.remove('hidden');
+                document.getElementById('cart-coupon-label').innerText = appliedOrderDiscount.mode === 'coupon' ? ('Coupon (' + appliedOrderDiscount.code + '):') : 'Order Discount:';
+                document.getElementById('cart-coupon-total').innerText = '-' + currencySymbol + couponDiscount.toFixed(2);
+            } else {
+                document.getElementById('cart-coupon-row').classList.add('hidden');
+            }
+
             document.getElementById('btn-checkout').disabled = false;
             // Refresh dependent panels
             if (selectedPaymentMethod === 'cash') buildQuickAmounts();
             if (selectedPaymentMethod === 'split') updateSplitBalance();
         }
 
+        // ---------------------------------------------------------------
+        // Whole-order discount: coupon code, manual percentage, or manual
+        // fixed amount. Coupon is self-authorizing (validated against a
+        // real WooCommerce coupon); percent/fixed are arbitrary judgment
+        // calls, so they route through requireManagerPin() first, same as
+        // the per-item discount — the server independently re-checks the
+        // override_wc_pos_prices capability regardless of the PIN result.
+        // ---------------------------------------------------------------
+
+        let orderDiscountMode = 'coupon'; // 'coupon' | 'percent' | 'fixed'
+
+        function setOrderDiscountMode(mode) {
+            orderDiscountMode = mode;
+            document.getElementById('coupon-error').classList.add('hidden');
+
+            ['coupon', 'percent', 'fixed'].forEach(m => {
+                const btn = document.getElementById('odmode-btn-' + m);
+                if (m === mode) {
+                    btn.className = 'py-1.5 rounded-lg bg-indigo-600 text-white font-bold transition';
+                } else {
+                    btn.className = 'py-1.5 rounded-lg text-slate-400 hover:text-white font-bold transition';
+                }
+            });
+
+            const codeInput  = document.getElementById('coupon-code-input');
+            const valueInput = document.getElementById('order-discount-value-input');
+            if (mode === 'coupon') {
+                codeInput.classList.remove('hidden');
+                valueInput.classList.add('hidden');
+            } else {
+                codeInput.classList.add('hidden');
+                valueInput.classList.remove('hidden');
+                valueInput.placeholder = mode === 'percent' ? 'e.g. 10' : 'e.g. 500';
+            }
+        }
+
+        function applyOrderDiscount() {
+            if (orderDiscountMode === 'coupon') {
+                applyCouponCode();
+            } else {
+                applyManualOrderDiscount(orderDiscountMode);
+            }
+        }
+
+        async function applyCouponCode() {
+            const input = document.getElementById('coupon-code-input');
+            const code = input.value.trim().toUpperCase();
+            const errorBox = document.getElementById('coupon-error');
+            errorBox.classList.add('hidden');
+
+            if (!code) {
+                errorBox.textContent = 'Enter a coupon code.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+
+            // Subtotal net of per-item discounts — matches what the server
+            // checks the coupon's min/max spend against.
+            const subtotal = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity) - (c.discountAmount || 0), 0);
+
+            const btn = document.getElementById('order-discount-apply-btn');
+            btn.disabled = true;
+            try {
+                const res = await fetch(restUrl + '/coupons/validate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify({ code, subtotal }),
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    errorBox.textContent = data.message || 'This coupon could not be applied.';
+                    errorBox.classList.remove('hidden');
+                    return;
+                }
+
+                appliedOrderDiscount = { mode: 'coupon', code: data.code, value: 0, discountAmount: data.discountAmount };
+                showOrderDiscountApplied(data.code + ' applied');
+                input.value = '';
+                renderCart();
+            } catch (e) {
+                errorBox.textContent = 'Network error while checking the coupon. Please try again.';
+                errorBox.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function applyManualOrderDiscount(mode) {
+            const errorBox = document.getElementById('coupon-error');
+            errorBox.classList.add('hidden');
+
+            const valueInput = document.getElementById('order-discount-value-input');
+            const value = parseFloat(valueInput.value) || 0;
+
+            if (value <= 0) {
+                errorBox.textContent = 'Enter a value greater than zero.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+            if (mode === 'percent' && value > 100) {
+                errorBox.textContent = 'Percentage cannot exceed 100.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+
+            const subtotal = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity) - (c.discountAmount || 0), 0);
+            let discountAmount = mode === 'percent' ? subtotal * (value / 100) : value;
+            discountAmount = Math.min(discountAmount, subtotal);
+
+            // Same confirmation step as the per-item discount — an arbitrary
+            // percentage/amount typed in at checkout is a manager-level
+            // decision, unlike a coupon code, which authorizes itself.
+            requireManagerPin(function() {
+                appliedOrderDiscount = { mode, code: '', value, discountAmount };
+                const label = mode === 'percent' ? (value + '% order discount applied') : (currencySymbol + value.toFixed(2) + ' order discount applied');
+                showOrderDiscountApplied(label);
+                valueInput.value = '';
+                renderCart();
+            });
+        }
+
+        function showOrderDiscountApplied(label) {
+            document.getElementById('order-discount-input-row').classList.add('hidden');
+            document.getElementById('order-discount-mode-tabs').classList.add('hidden');
+            document.getElementById('coupon-applied-row').classList.remove('hidden');
+            document.getElementById('coupon-applied-row').classList.add('flex');
+            document.getElementById('coupon-applied-label').textContent = label;
+        }
+
+        function removeCouponCode() {
+            appliedOrderDiscount = null;
+            resetCouponUI();
+            renderCart();
+        }
+
+        function resetCouponUI() {
+            document.getElementById('order-discount-input-row').classList.remove('hidden');
+            document.getElementById('order-discount-mode-tabs').classList.remove('hidden');
+            document.getElementById('coupon-applied-row').classList.add('hidden');
+            document.getElementById('coupon-applied-row').classList.remove('flex');
+            document.getElementById('coupon-error').classList.add('hidden');
+            const codeInput = document.getElementById('coupon-code-input');
+            const valueInput = document.getElementById('order-discount-value-input');
+            if (codeInput) codeInput.value = '';
+            if (valueInput) valueInput.value = '';
+            setOrderDiscountMode('coupon');
+        }
+
         function clearCart() {
             cart = [];
+            appliedOrderDiscount = null;
+            resetCouponUI();
             renderCart();
         }
 
@@ -1682,6 +1910,78 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 }
             } catch(e) {
                 alert('Could not verify PIN. Check connection.');
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Change My PIN (self-service) — any cashier/manager can change
+        // their own PIN anytime from here, not just once on first setup.
+        // ---------------------------------------------------------------
+
+        function openChangePinModal() {
+            document.getElementById('change-pin-error').classList.add('hidden');
+            document.getElementById('change-pin-current').value = '';
+            document.getElementById('change-pin-new').value = '';
+            document.getElementById('change-pin-confirm').value = '';
+            document.getElementById('change-pin-modal').classList.remove('hidden');
+        }
+
+        function closeChangePinModal() {
+            document.getElementById('change-pin-modal').classList.add('hidden');
+        }
+
+        async function submitChangePin() {
+            const errorBox = document.getElementById('change-pin-error');
+            errorBox.classList.add('hidden');
+
+            const currentPin = document.getElementById('change-pin-current').value.trim();
+            const newPin     = document.getElementById('change-pin-new').value.trim();
+            const confirmPin = document.getElementById('change-pin-confirm').value.trim();
+
+            if (!currentPin) {
+                errorBox.textContent = 'Enter your current PIN.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+            if (!/^\d{4,8}$/.test(newPin)) {
+                errorBox.textContent = 'New PIN must be 4 to 8 digits.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+            if (newPin !== confirmPin) {
+                errorBox.textContent = 'New PIN and confirmation do not match.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+            if (newPin === currentPin) {
+                errorBox.textContent = 'New PIN must be different from your current PIN.';
+                errorBox.classList.remove('hidden');
+                return;
+            }
+
+            const btn = document.getElementById('change-pin-submit-btn');
+            btn.disabled = true;
+            try {
+                const res = await fetch(restUrl + '/pin/set', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': restNonce },
+                    body: JSON.stringify({ pin: newPin, currentPin }),
+                });
+                const data = await res.json();
+
+                if (!data.success) {
+                    errorBox.textContent = data.message || 'Could not update PIN.';
+                    errorBox.classList.remove('hidden');
+                    return;
+                }
+
+                closeChangePinModal();
+                alert('PIN updated successfully.');
+            } catch (e) {
+                errorBox.textContent = 'Network error. Please check your connection and try again.';
+                errorBox.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
             }
         }
 
@@ -1946,8 +2246,14 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
 
             const subtotal      = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity), 0);
             const totalDiscount = cart.reduce((acc, c) => acc + (c.discountAmount || 0), 0);
-            const tax           = taxInclusive ? subtotal - (subtotal / (1 + taxRate)) : (subtotal - totalDiscount) * taxRate;
-            const grandTotal    = taxInclusive ? subtotal - totalDiscount : (subtotal - totalDiscount) + tax;
+            // Bug fix: this previously ignored appliedOrderDiscount entirely, so the
+            // amount the cashier collected (tendered/change/split validation)
+            // would still reflect the pre-coupon total even after a coupon
+            // was successfully applied in the cart summary above.
+            const couponDiscount = appliedOrderDiscount ? Math.min(appliedOrderDiscount.discountAmount, subtotal - totalDiscount) : 0;
+            const netSubtotal   = subtotal - totalDiscount - couponDiscount;
+            const tax           = taxInclusive ? netSubtotal - (netSubtotal / (1 + taxRate)) : netSubtotal * taxRate;
+            const grandTotal    = taxInclusive ? netSubtotal : netSubtotal + tax;
 
             // Build payments array
             let payments = [];
@@ -1979,6 +2285,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 cashierName,
                 customerId:     selectedCustomer ? selectedCustomer.id : 0,
                 orderNote:      (document.getElementById('pos-order-note').value || '').trim(),
+                orderDiscount:  appliedOrderDiscount ? { mode: appliedOrderDiscount.mode, code: appliedOrderDiscount.code || '', value: appliedOrderDiscount.value || 0 } : null,
                 items: cart.map(c => ({
                     productId:      c.productId,
                     variationId:    c.variationId,
@@ -2076,7 +2383,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             if (e.key === 'F9') { e.preventDefault(); if (!document.getElementById('btn-checkout').disabled) processCheckout(); }
             if (e.key === 'Escape') {
                 // Close the topmost visible modal
-                const modals = ['discount-modal', 'manager-pin-modal', 'variation-modal', 'customer-modal', 'shift-modal-overlay'];
+                const modals = ['discount-modal', 'manager-pin-modal', 'variation-modal', 'customer-modal', 'shift-modal-overlay', 'change-pin-modal'];
                 for (const id of modals) {
                     const el = document.getElementById(id);
                     if (el && !el.classList.contains('hidden')) { el.classList.add('hidden'); break; }
