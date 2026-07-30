@@ -275,6 +275,18 @@ class SalesEngine {
             );
         }
 
+        // Bug fix: WooCommerce's own core stock-reduction hook
+        // (wc_maybe_reduce_stock_levels) fires automatically on certain
+        // order status transitions — including pending -> processing, which
+        // is exactly the transition this order goes through a few lines
+        // below. Core has no way to know Inventory::reduce_stock_atomic()
+        // above already reduced stock directly via SQL, so without this it
+        // silently reduces the SAME stock a second time — a single sale of
+        // 1 unit was dropping stock by 2. Marking stock as already reduced
+        // here (the same flag core itself sets after its own reduction path)
+        // tells that hook to skip, since we've already handled it.
+        $order->get_data_store()->set_stock_reduced( $order->get_id(), true );
+
         // --- Attach POS metadata ---
         $order->update_meta_data( '_wc_pos_order_id',       sanitize_text_field( $payload['id'] ?? '' ) );
         $order->update_meta_data( '_wc_pos_register_id',    sanitize_text_field( $payload['registerId'] ?? '' ) );
