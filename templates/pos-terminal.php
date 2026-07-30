@@ -1902,8 +1902,20 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 });
                 const data = await res.json();
                 if (data.success) {
+                    // Bug fix: closeManagerPinModal() sets managerPinCallback
+                    // to null — calling it BEFORE invoking the callback (the
+                    // previous order here) meant the callback had already
+                    // been wiped out by the time it was "invoked," so it
+                    // silently never ran. This affected every PIN-gated
+                    // discount: per-item discounts and the whole-order
+                    // percent/fixed discount both use this same function —
+                    // the PIN would verify successfully, the modal would
+                    // close, and nothing would actually apply. Capture the
+                    // callback in a local variable first, then close the
+                    // modal, then call it.
+                    const callback = managerPinCallback;
                     closeManagerPinModal();
-                    if (managerPinCallback) managerPinCallback();
+                    if (callback) callback();
                 } else {
                     document.getElementById('manager-pin-input').value = '';
                     alert(data.message || 'Incorrect manager PIN.');
@@ -2209,7 +2221,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                                     '<p class="font-bold text-white">Order #' + num + ' &bull; ' + currencySymbol + tot + '</p>' +
                                     '<p class="text-[10px] text-slate-400">Date: ' + dt + ' &bull; Cashier: ' + cashier + '</p>' +
                                 '</div>' +
-                                '<button onclick="alert(\'Printing thermal receipt for Order #\' + num)" class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-600 transition">' +
+                                '<button onclick="reprintReceipt(' + o.id + ')" class="bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-600 transition">' +
                                     'Reprint Receipt' +
                                 '</button>' +
                             '</div>';
@@ -2227,6 +2239,44 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                             'Reprint Receipt' +
                         '</button>' +
                     '</div>';
+            }
+        }
+
+        // Bug fix: this button previously did nothing but show a generic
+        // browser alert ("Printing thermal receipt for Order #X") — it never
+        // fetched the real order or touched the actual receipt template at
+        // all. Now fetches the order's full detail and reuses the exact
+        // same buildReceipt()/print flow the original checkout receipt uses.
+        async function reprintReceipt(orderId) {
+            try {
+                const res = await fetch(restUrl + '/orders/' + orderId, { headers: { 'X-WP-Nonce': restNonce } });
+                const data = await res.json();
+
+                if (!data.success) {
+                    alert(data.message || 'Could not load this order for reprinting.');
+                    return;
+                }
+
+                buildReceipt({
+                    orderId:      data.orderId,
+                    items:        data.items,
+                    subtotal:     data.subtotal,
+                    totalDiscount: data.totalDiscount,
+                    tax:          data.tax,
+                    grandTotal:   data.grandTotal,
+                    payments:     data.payments,
+                    changeDue:    data.changeDue,
+                    cashierName:  data.cashierName,
+                });
+
+                window.print();
+                const receiptEl = document.getElementById('printable-receipt');
+                if (receiptEl) {
+                    receiptEl.classList.add('hidden');
+                    receiptEl.style.display = '';
+                }
+            } catch (e) {
+                alert('Network error while loading this order. Please try again.');
             }
         }
 

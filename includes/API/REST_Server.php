@@ -73,6 +73,16 @@ class REST_Server {
             'permission_callback' => array( $this, 'check_pos_permission' ),
         ) );
 
+        // Full detail for a single past order — used by the Order History
+        // screen's "Reprint Receipt" action to rebuild the actual receipt
+        // (this previously didn't exist; the button was a placeholder that
+        // never fetched anything real — see get_order_detail()).
+        register_rest_route( $namespace, '/orders/(?P<id>\d+)', array(
+            'methods'             => 'GET',
+            'callback'            => array( $this, 'get_order_detail' ),
+            'permission_callback' => array( $this, 'check_pos_permission' ),
+        ) );
+
         // Register Shift Control (open / close)
         register_rest_route( $namespace, '/registers/shift', array(
             'methods'             => 'POST',
@@ -658,6 +668,75 @@ class REST_Server {
             'success' => true,
             'orderId' => $order_or_error->get_id(),
             'status'  => $order_or_error->get_status(),
+        ) );
+    }
+
+    /**
+     * GET /wc-pos/v1/orders/{id}
+     * Full order detail shaped to match exactly what the terminal's
+     * buildReceipt() expects, so "Reprint Receipt" in Order History can
+     * reconstruct the real receipt instead of the placeholder alert() it
+     * showed before this existed.
+     */
+    public function get_order_detail( $request ) {
+        $order_id = absint( $request->get_param( 'id' ) );
+        $order    = wc_get_order( $order_id );
+
+        if ( ! $order || 'wc_pos_pro' !== $order->get_created_via() ) {
+            return new \WP_REST_Response( array( 'success' => false, 'message' => __( 'Order not found.', 'wc-pos-pro' ) ), 404 );
+        }
+
+        $items       = array();
+        $subtotal    = 0.0;
+        $item_discount_total = 0.0;
+
+        foreach ( $order->get_items() as $item ) {
+            $quantity      = $item->get_quantity() ?: 1;
+            $line_subtotal = (float) $item->get_subtotal();
+            $line_total    = (float) $item->get_total();
+            $unit_price    = $line_subtotal / $quantity;
+            $discount      = max( 0, $line_subtotal - $line_total );
+            $product       = $item->get_product();
+
+            $items[] = array(
+                'name'           => $item->get_name(),
+                'sku'            => $product ? $product->get_sku() : '',
+                'unitPrice'      => $unit_price,
+                'quantity'       => $quantity,
+                'discountAmount' => $discount,
+            );
+
+            $subtotal            += $line_subtotal;
+            $item_discount_total += $discount;
+        }
+
+        // Whole-order discounts: coupon-based discount is tracked natively
+        // by WooCommerce; a manual percent/fixed order discount was applied
+        // as a negative fee line (see SalesEngine::create_pos_order()) and
+        // isn't part of get_total_discount() — both are folded in here so
+        // the reprinted receipt's discount total matches what the customer
+        // actually paid.
+        $fee_discount_total = 0.0;
+        foreach ( $order->get_items( 'fee' ) as $fee ) {
+            $fee_total = (float) $fee->get_total();
+            if ( $fee_total < 0 ) {
+                $fee_discount_total += abs( $fee_total );
+            }
+        }
+
+        $total_discount = $item_discount_total + (float) $order->get_total_discount() + $fee_discount_total;
+
+        return rest_ensure_response( array(
+            'success'      => true,
+            'orderId'      => $order->get_id(),
+            'items'        => $items,
+            'subtotal'     => $subtotal,
+            'totalDiscount' => $total_discount,
+            'tax'          => (float) $order->get_total_tax(),
+            'grandTotal'   => (float) $order->get_total(),
+            'payments'     => $order->get_meta( '_wc_pos_payments' ) ?: array(),
+            'changeDue'    => 0, // not stored historically; omitted on reprint
+            'cashierName'  => $order->get_meta( '_wc_pos_cashier_name' ) ?: __( 'Staff', 'wc-pos-pro' ),
         ) );
     }
 
