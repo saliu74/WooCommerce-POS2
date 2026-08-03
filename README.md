@@ -2,7 +2,7 @@
 
 A multi-branch, multi-register point-of-sale system built directly on top of WooCommerce. Cashiers ring up in-person sales from a dedicated terminal screen, while every product, stock level, customer, and order stays in perfect sync with your existing WooCommerce store — no separate POS catalog to maintain.
 
-**Current version:** 1.5.2
+**Current version:** 1.6.4
 
 ---
 
