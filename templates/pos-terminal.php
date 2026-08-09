@@ -48,6 +48,14 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
            has no scrollbar-hide utility by default. */
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        /* Bug fix: the category pills bar was also using scrollbar-hide,
+           which removed the only visual cue that there were more categories
+           to scroll to — cashiers had no way to tell "All Products" wasn't
+           the whole list. A thin, subtle (but visible) scrollbar instead. */
+        .scrollbar-thin::-webkit-scrollbar { height: 6px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #475569 transparent; }
         html.light main { background-color: #f8fafc !important; border-color: #cbd5e1 !important; }
         html.light .pos-card { background-color: #ffffff !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
         html.light .pos-card h3 { color: #0f172a !important; }
@@ -163,7 +171,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 </div>
 
                 <!-- Product Categories Filter Pills Bar -->
-                <div id="category-pills-bar" class="flex items-center space-x-2 overflow-x-auto pb-1 shrink-0 scrollbar-hide text-xs">
+                <div id="category-pills-bar" class="flex items-center space-x-2 overflow-x-auto pb-1 shrink-0 scrollbar-thin text-xs">
                     <button onclick="filterCategory(null)" id="cat-pill-all" class="px-3 py-1.5 rounded-xl bg-indigo-600 text-white font-bold whitespace-nowrap transition">All Products</button>
                     <!-- Dynamically populated category pills -->
                 </div>

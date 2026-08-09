@@ -208,14 +208,47 @@ class SalesEngine {
             return $discount_check;
         }
 
+        // Bug fix (traced by the client's activity-log plugin developer):
+        // customer_id was previously stored on the order with zero
+        // validation that it actually corresponds to a real WordPress user,
+        // and billing name fields were never populated on any POS order at
+        // all — regardless of whether a real customer was attached.
+        // Together, that let an order end up with BOTH a blank billing name
+        // AND a customer_id that doesn't resolve via get_user_by() — exactly
+        // the combination that crashed their logging plugin, which assumes
+        // any order with a truthy customer_id has a real, resolvable user
+        // behind it. True walk-in sales (no customer selected at all) are
+        // unaffected either way, since their customer_id is already 0.
+        $customer_id = intval( $payload['customerId'] ?? 0 );
+        $customer    = $customer_id ? get_user_by( 'id', $customer_id ) : false;
+        if ( $customer_id && ! $customer ) {
+            // Stale/invalid reference (e.g. the customer account was
+            // deleted after being selected) — fall back to guest rather
+            // than store a dangling ID.
+            $customer_id = 0;
+        }
+
         $order = wc_create_order( array(
             'status'      => 'pending',   // Start pending; move to completed after stock is confirmed.
-            'customer_id' => intval( $payload['customerId'] ?? 0 ),
+            'customer_id' => $customer_id,
             'created_via' => 'wc_pos_pro',
         ) );
 
         if ( is_wp_error( $order ) ) {
             return $order;
+        }
+
+        if ( $customer ) {
+            $first_name = get_user_meta( $customer->ID, 'first_name', true ) ?: $customer->display_name;
+            $last_name  = get_user_meta( $customer->ID, 'last_name', true );
+            $order->set_billing_first_name( $first_name );
+            $order->set_billing_last_name( $last_name );
+            // The POS auto-generates a placeholder @pos.local email for
+            // walk-ins with no email given — don't carry that onto the
+            // order's billing email as if it were real.
+            if ( $customer->user_email && false === strpos( $customer->user_email, '@pos.local' ) ) {
+                $order->set_billing_email( $customer->user_email );
+            }
         }
 
         // --- Add line items and reduce stock atomically ---

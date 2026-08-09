@@ -240,8 +240,51 @@ class REST_Server {
             'order'    => 'ASC',
             'paginate' => true,
         );
+
+        // Bug fix: wc_get_products()'s default 's' param runs a standard
+        // WordPress search — title, full description, AND excerpt — so a
+        // common word appearing anywhere in a product's description (e.g.
+        // "weight" in shipping/spec text) matched dozens of unrelated
+        // products. A cashier searching at the till expects this to match
+        // what the product IS: its name or its SKU — nothing else. Resolved
+        // via a direct title/SKU lookup instead of handing the term to
+        // WooCommerce's own broad search.
         if ( $search ) {
-            $args['s'] = sanitize_text_field( $search );
+            global $wpdb;
+            $like = '%' . $wpdb->esc_like( sanitize_text_field( $search ) ) . '%';
+
+            // Variation title/SKU matches resolve to their parent product
+            // ID, since that's what's actually browsable/addable in the
+            // grid — consistent with how variable products are handled
+            // everywhere else in this endpoint.
+            $matching_ids = $wpdb->get_col( $wpdb->prepare(
+                "SELECT DISTINCT
+                    CASE WHEN p.post_type = 'product_variation' THEN p.post_parent ELSE p.ID END
+                 FROM {$wpdb->posts} p
+                 LEFT JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key = '_sku'
+                 WHERE p.post_type IN ( 'product', 'product_variation' )
+                   AND p.post_status = 'publish'
+                   AND ( p.post_title LIKE %s OR pm.meta_value LIKE %s )",
+                $like,
+                $like
+            ) );
+
+            if ( empty( $matching_ids ) ) {
+                // No real matches — short-circuit with a correctly-shaped,
+                // empty response rather than falling through to an
+                // unfiltered product list.
+                return rest_ensure_response( array(
+                    'products'   => array(),
+                    'page'       => $page,
+                    'totalPages' => 0,
+                    'total'      => 0,
+                ) );
+            }
+
+            $args['include'] = array_map( 'absint', $matching_ids );
+            // 'include' already scopes the result set precisely, so
+            // WooCommerce's own default title/content sort doesn't need to
+            // run — keep the alphabetical ordering set above.
         }
         if ( $category ) {
             $args['category'] = array( sanitize_text_field( $category ) );
