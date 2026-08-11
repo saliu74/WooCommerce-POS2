@@ -497,23 +497,53 @@ class SalesEngine {
     }
 
     /**
-     * Hard stop: reject the sale if this register has no active shift.
-     * Enforced server-side so it can't be bypassed by a stale frontend state.
+     * Hard stop: reject the sale if this register has no active shift, OR
+     * if its active shift is stale (left open from a previous day, past the
+     * 8:00 AM cutoff for today). Enforced server-side so it can't be
+     * bypassed by a stale frontend state.
+     *
+     * Bug fix: previously this only checked that SOME active shift existed
+     * — indefinitely. That meant a shift opened once and never closed would
+     * keep authorizing sales forever, so a cashier who simply never bothered
+     * to open a fresh shift each morning never hit any block at all (the
+     * "already open" gate at shift-OPEN time only fires if someone actually
+     * tries to open a new one). Now checked at the point of SALE too: once
+     * it's 8:00 AM local time on any day after the shift was opened, that
+     * shift no longer authorizes new sales — it must be closed (and a new
+     * one opened for today) before selling can continue.
      */
     private static function require_open_shift( $register_id ) {
         global $wpdb;
 
         $shifts_table = $wpdb->prefix . 'wc_pos_shifts';
-        $open_shift   = $wpdb->get_var( $wpdb->prepare(
-            "SELECT id FROM {$shifts_table} WHERE register_id = %s AND status = 'active' LIMIT 1",
+        $shift        = $wpdb->get_row( $wpdb->prepare(
+            "SELECT id, opened_at FROM {$shifts_table} WHERE register_id = %s AND status = 'active' LIMIT 1",
             $register_id
         ) );
 
-        if ( ! $open_shift ) {
+        if ( ! $shift ) {
             return new \WP_Error(
                 'shift_not_open',
                 __( 'This register does not have an open shift. Open a shift before processing sales.', 'wc-pos-pro' )
             );
+        }
+
+        $opened_at_local   = get_date_from_gmt( $shift->opened_at, 'Y-m-d H:i:s' );
+        $opened_date_local = substr( $opened_at_local, 0, 10 );
+        $today_local       = current_time( 'Y-m-d' );
+
+        if ( $opened_date_local !== $today_local ) {
+            $eight_am_today = strtotime( $today_local . ' 08:00:00' );
+            if ( current_time( 'timestamp' ) >= $eight_am_today ) {
+                return new \WP_Error(
+                    'stale_shift',
+                    sprintf(
+                        /* translators: %s: date/time the stale shift was opened */
+                        __( 'The shift from %s is still open. It must be closed, and a new shift opened for today, before any further sales can be made.', 'wc-pos-pro' ),
+                        date_i18n( 'M j, g:i A', strtotime( $opened_at_local ) )
+                    )
+                );
+            }
         }
 
         return true;

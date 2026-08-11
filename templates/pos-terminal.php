@@ -2551,6 +2551,19 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     closeMobileCart();
                 } else {
                     alert('Sale failed: ' + (data.message || 'Unknown error. Please try again.'));
+
+                    // Same guidance as the shift-open flow: if this sale was
+                    // blocked because the active shift is stale (left open
+                    // from a previous day, past the 8am cutoff), take the
+                    // cashier straight into Close Shift mode rather than
+                    // leaving them stuck with an error and no clear next
+                    // step — this is the enforcement the client asked for,
+                    // now applied at the point of sale, not just shift-open.
+                    if (data.code === 'stale_shift') {
+                        currentShiftStatus = 'open';
+                        updateShiftIndicator();
+                        openShiftModal();
+                    }
                 }
             } catch(e) {
                 alert('Network error. The sale could not be submitted. Please check your connection and retry.');

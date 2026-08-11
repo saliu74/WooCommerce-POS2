@@ -704,6 +704,7 @@ class REST_Server {
             return new \WP_REST_Response( array(
                 'success' => false,
                 'message' => $order_or_error->get_error_message(),
+                'code'    => $order_or_error->get_error_code(),
             ), 400 );
         }
 
