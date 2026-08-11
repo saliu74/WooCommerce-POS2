@@ -309,9 +309,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                         </div>
 
                         <!-- Payment Method Tabs -->
-                        <div class="grid grid-cols-3 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                        <div class="grid grid-cols-4 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
                             <button onclick="setPaymentMethod('cash')" id="pay-btn-cash" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold text-[11px] transition">Cash</button>
                             <button onclick="setPaymentMethod('card')" id="pay-btn-card" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Card</button>
+                            <button onclick="setPaymentMethod('transfer')" id="pay-btn-transfer" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Transfer</button>
                             <button onclick="setPaymentMethod('split')" id="pay-btn-split" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Split</button>
                         </div>
 
@@ -331,6 +332,17 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                             <div id="quick-amounts" class="grid grid-cols-4 gap-1"></div>
                         </div>
 
+                        <!-- Bank Transfer confirmation (no calculator needed —
+                             use the Order Note field below for the transfer
+                             reference/confirmation code) -->
+                        <div id="transfer-panel" class="hidden space-y-2 text-xs">
+                            <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                                <span class="text-slate-400">Amount Due:</span>
+                                <span id="transfer-amount-due" class="font-mono font-bold text-emerald-400">$0.00</span>
+                            </div>
+                            <p class="text-slate-500 text-[11px]">Confirm the transfer has been received before completing the sale. Add the transfer reference in the Order Note field below.</p>
+                        </div>
+
                         <!-- Split payment panel -->
                         <div id="split-payment-panel" class="hidden space-y-2 text-xs">
                             <p class="text-slate-400 text-[11px]">Enter amounts for each method. They must sum to the total.</p>
@@ -346,9 +358,29 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                                     oninput="updateSplitBalance()"
                                     class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
                             </div>
+                            <div class="flex items-center space-x-2">
+                                <label class="text-slate-400 shrink-0 w-14">Transfer:</label>
+                                <input type="number" id="split-transfer" min="0" step="0.01" placeholder="0.00"
+                                    oninput="updateSplitBalance()"
+                                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 font-mono text-white text-xs focus:outline-none focus:border-emerald-500" />
+                            </div>
                             <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
                                 <span class="text-slate-400">Remaining:</span>
                                 <span id="split-remaining" class="font-mono font-bold text-amber-400">$0.00</span>
+                            </div>
+                        </div>
+
+                        <!-- Fulfillment: Pickup vs Delivery -->
+                        <div class="space-y-1.5">
+                            <label class="text-slate-400 text-[11px]">Fulfillment</label>
+                            <div class="grid grid-cols-2 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800 text-xs">
+                                <button onclick="setFulfillmentType('pickup')" id="fulfill-btn-pickup" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold text-[11px] transition">Pickup</button>
+                                <button onclick="setFulfillmentType('delivery')" id="fulfill-btn-delivery" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Delivery</button>
+                            </div>
+                            <div id="delivery-address-row" class="hidden space-y-1">
+                                <textarea id="delivery-address-input" rows="2" maxlength="500"
+                                    placeholder="Delivery address (required for delivery orders)..."
+                                    class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
                             </div>
                         </div>
 
@@ -653,6 +685,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         let appliedOrderDiscount = null;
         let selectedCustomer = null;
         let selectedPaymentMethod = 'cash';
+        // Delivery feature: 'pickup' (default) or 'delivery'. The HTML for
+        // this already existed (buttons, address field) but the JS behind
+        // it was never actually written — setFulfillmentType() below is new.
+        let currentFulfillmentType = 'pickup';
         let parkedCarts = JSON.parse(localStorage.getItem('wc_pos_parked_carts') || '[]');
         let currentTab = 'register';
         // Multi-branch feature: persisted branch/register selection.
@@ -1014,6 +1050,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     const summaryBox = document.getElementById('shift-close-summary');
                     summaryBox.innerHTML =
                         '<div class="flex justify-between"><span>Total Sales:</span><span>' + currencySymbol + s.totalSales.toFixed(2) + '</span></div>' +
+                        '<div class="flex justify-between"><span>Transfer Sales:</span><span>' + currencySymbol + (s.transferSales || 0).toFixed(2) + '</span></div>' +
                         '<div class="flex justify-between"><span>Expected Cash:</span><span>' + currencySymbol + s.expectedCash.toFixed(2) + '</span></div>' +
                         '<div class="flex justify-between"><span>Actual Cash:</span><span>' + currencySymbol + s.actualCash.toFixed(2) + '</span></div>' +
                         '<div class="flex justify-between font-bold ' + (s.cashDifference < 0 ? 'text-rose-400' : 'text-emerald-400') + '"><span>Difference:</span><span>' + currencySymbol + s.cashDifference.toFixed(2) + '</span></div>';
@@ -1665,6 +1702,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             document.getElementById('btn-checkout').disabled = false;
             // Refresh dependent panels
             if (selectedPaymentMethod === 'cash') buildQuickAmounts();
+            if (selectedPaymentMethod === 'transfer') updateTransferAmountDue();
             if (selectedPaymentMethod === 'split') updateSplitBalance();
         }
 
@@ -2007,7 +2045,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
 
         function setPaymentMethod(method) {
             selectedPaymentMethod = method;
-            ['cash', 'card', 'split'].forEach(m => {
+            ['cash', 'card', 'transfer', 'split'].forEach(m => {
                 const btn = document.getElementById('pay-btn-' + m);
                 if (btn) {
                     btn.classList.toggle('bg-indigo-600', m === method);
@@ -2016,12 +2054,39 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 }
             });
             // Show relevant payment input panel
-            const cashPanel  = document.getElementById('cash-calc-panel');
-            const splitPanel = document.getElementById('split-payment-panel');
-            if (cashPanel)  cashPanel.classList.toggle('hidden',  method !== 'cash');
-            if (splitPanel) splitPanel.classList.toggle('hidden', method !== 'split');
+            const cashPanel     = document.getElementById('cash-calc-panel');
+            const transferPanel = document.getElementById('transfer-panel');
+            const splitPanel    = document.getElementById('split-payment-panel');
+            if (cashPanel)     cashPanel.classList.toggle('hidden',     method !== 'cash');
+            if (transferPanel) transferPanel.classList.toggle('hidden', method !== 'transfer');
+            if (splitPanel)    splitPanel.classList.toggle('hidden',    method !== 'split');
             if (method === 'cash') buildQuickAmounts();
+            if (method === 'transfer') updateTransferAmountDue();
             if (method === 'split') updateSplitBalance();
+        }
+
+        // Delivery feature: toggles the Pickup/Delivery buttons and shows/
+        // hides the delivery address field. This was previously missing
+        // entirely — the buttons existed in the markup but called a
+        // function that was never defined, so clicking them did nothing.
+        function setFulfillmentType(type) {
+            currentFulfillmentType = type;
+            ['pickup', 'delivery'].forEach(t => {
+                const btn = document.getElementById('fulfill-btn-' + t);
+                if (btn) {
+                    btn.classList.toggle('bg-indigo-600', t === type);
+                    btn.classList.toggle('text-white', t === type);
+                    btn.classList.toggle('text-slate-400', t !== type);
+                }
+            });
+            const addressRow = document.getElementById('delivery-address-row');
+            if (addressRow) addressRow.classList.toggle('hidden', type !== 'delivery');
+        }
+
+        function updateTransferAmountDue() {
+            const grandTotal = parseFloat(document.getElementById('cart-total').innerText.replace(/[^0-9.]/g, '')) || 0;
+            const el = document.getElementById('transfer-amount-due');
+            if (el) el.innerText = currencySymbol + grandTotal.toFixed(2);
         }
 
         function buildQuickAmounts() {
@@ -2053,9 +2118,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
 
         function updateSplitBalance() {
             const grandTotal = parseFloat(document.getElementById('cart-total').innerText.replace(/[^0-9.]/g, '')) || 0;
-            const cash = parseFloat(document.getElementById('split-cash').value) || 0;
-            const card = parseFloat(document.getElementById('split-card').value) || 0;
-            const remaining = grandTotal - cash - card;
+            const cash     = parseFloat(document.getElementById('split-cash').value) || 0;
+            const card     = parseFloat(document.getElementById('split-card').value) || 0;
+            const transfer = parseFloat(document.getElementById('split-transfer').value) || 0;
+            const remaining = grandTotal - cash - card - transfer;
             const el = document.getElementById('split-remaining');
             if (el) {
                 el.innerText = currencySymbol + Math.abs(remaining).toFixed(2) + (remaining < 0 ? ' (over)' : '');
@@ -2302,6 +2368,16 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 return;
             }
 
+            // Delivery feature: an address is required if Delivery is
+            // selected — otherwise the order would go out with no way to
+            // actually deliver it.
+            const deliveryAddressInput = document.getElementById('delivery-address-input');
+            const deliveryAddress = deliveryAddressInput ? deliveryAddressInput.value.trim() : '';
+            if (currentFulfillmentType === 'delivery' && !deliveryAddress) {
+                alert('Enter a delivery address, or switch to Pickup.');
+                return;
+            }
+
             const subtotal      = cart.reduce((acc, c) => acc + (c.unitPrice * c.quantity), 0);
             const totalDiscount = cart.reduce((acc, c) => acc + (c.discountAmount || 0), 0);
             // Bug fix: this previously ignored appliedOrderDiscount entirely, so the
@@ -2317,14 +2393,16 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             let payments = [];
             let changeDue = 0;
             if (selectedPaymentMethod === 'split') {
-                const cashAmt = parseFloat(document.getElementById('split-cash').value) || 0;
-                const cardAmt = parseFloat(document.getElementById('split-card').value) || 0;
-                if (Math.abs(cashAmt + cardAmt - grandTotal) > 0.01) {
-                    alert('Split amounts (' + currencySymbol + (cashAmt + cardAmt).toFixed(2) + ') must equal the total (' + currencySymbol + grandTotal.toFixed(2) + ').');
+                const cashAmt     = parseFloat(document.getElementById('split-cash').value) || 0;
+                const cardAmt     = parseFloat(document.getElementById('split-card').value) || 0;
+                const transferAmt = parseFloat(document.getElementById('split-transfer').value) || 0;
+                if (Math.abs(cashAmt + cardAmt + transferAmt - grandTotal) > 0.01) {
+                    alert('Split amounts (' + currencySymbol + (cashAmt + cardAmt + transferAmt).toFixed(2) + ') must equal the total (' + currencySymbol + grandTotal.toFixed(2) + ').');
                     return;
                 }
                 if (cashAmt > 0) payments.push({ method: 'cash', amount: cashAmt });
                 if (cardAmt > 0) payments.push({ method: 'card', amount: cardAmt });
+                if (transferAmt > 0) payments.push({ method: 'transfer', amount: transferAmt });
             } else if (selectedPaymentMethod === 'cash') {
                 const tendered = parseFloat(document.getElementById('cash-tendered').value) || grandTotal;
                 changeDue = Math.max(0, tendered - grandTotal);
@@ -2344,6 +2422,8 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 customerId:     selectedCustomer ? selectedCustomer.id : 0,
                 orderNote:      (document.getElementById('pos-order-note').value || '').trim(),
                 orderDiscount:  appliedOrderDiscount ? { mode: appliedOrderDiscount.mode, code: appliedOrderDiscount.code || '', value: appliedOrderDiscount.value || 0 } : null,
+                fulfillmentType: currentFulfillmentType,
+                deliveryAddress: currentFulfillmentType === 'delivery' ? deliveryAddress : '',
                 items: cart.map(c => ({
                     productId:      c.productId,
                     variationId:    c.variationId,
@@ -2383,6 +2463,8 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     clearCart();
                     selectCustomer(null);
                     document.getElementById('pos-order-note').value = '';
+                    if (deliveryAddressInput) deliveryAddressInput.value = '';
+                    setFulfillmentType('pickup');
                     fetchProducts();
                     // Responsive fix: on mobile, the cart is a full-screen
                     // view — after a completed sale, return the cashier to

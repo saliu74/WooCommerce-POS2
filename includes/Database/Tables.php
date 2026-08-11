@@ -77,6 +77,7 @@ class Tables {
             total_sales decimal(12,2) DEFAULT 0.00,
             cash_sales decimal(12,2) DEFAULT 0.00,
             card_sales decimal(12,2) DEFAULT 0.00,
+            transfer_sales decimal(12,2) DEFAULT 0.00,
             status varchar(32) DEFAULT 'active',
             opening_notes text DEFAULT NULL,
             closing_notes text DEFAULT NULL,

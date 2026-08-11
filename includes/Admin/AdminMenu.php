@@ -325,9 +325,10 @@ class AdminMenu {
             'limit'       => -1,
         ) );
 
-        $total_sales = 0;
-        $cash_sales  = 0;
-        $card_sales  = 0;
+        $total_sales    = 0;
+        $cash_sales     = 0;
+        $card_sales     = 0;
+        $transfer_sales = 0;
         foreach ( $orders as $order ) {
             $total_sales += (float) $order->get_total();
             $payments = $order->get_meta( '_wc_pos_payments' );
@@ -338,6 +339,8 @@ class AdminMenu {
                         $cash_sales += $amount;
                     } elseif ( 'card' === ( $payment['method'] ?? '' ) ) {
                         $card_sales += $amount;
+                    } elseif ( 'transfer' === ( $payment['method'] ?? '' ) ) {
+                        $transfer_sales += $amount;
                     }
                 }
             }
@@ -354,6 +357,7 @@ class AdminMenu {
                 'total_sales'     => $total_sales,
                 'cash_sales'      => $cash_sales,
                 'card_sales'      => $card_sales,
+                'transfer_sales'  => $transfer_sales,
                 'status'          => 'closed',
                 'closing_notes'   => sprintf(
                     /* translators: %s: admin display name */
@@ -362,7 +366,7 @@ class AdminMenu {
                 ),
             ),
             array( 'id' => $shift->id ),
-            array( '%s', '%s', '%f', '%s', '%f', '%f', '%f', '%s', '%s' ),
+            array( '%s', '%s', '%f', '%s', '%f', '%f', '%f', '%f', '%s', '%s' ),
             array( '%s' )
         );
 
@@ -585,6 +589,7 @@ class AdminMenu {
         $order_count    = 0;
         $cash_sales     = 0;
         $card_sales     = 0;
+        $transfer_sales = 0;
         $by_branch      = array();
         $by_day         = array();
         $branch_names   = $this->get_branch_names_map();
@@ -604,6 +609,8 @@ class AdminMenu {
                         $cash_sales += $amount;
                     } elseif ( 'card' === $method ) {
                         $card_sales += $amount;
+                    } elseif ( 'transfer' === $method ) {
+                        $transfer_sales += $amount;
                     }
                 }
             }
@@ -641,6 +648,7 @@ class AdminMenu {
             'totalDiscount' => $total_discount,
             'cashSales'     => $cash_sales,
             'cardSales'     => $card_sales,
+            'transferSales' => $transfer_sales,
             'byBranch'      => $by_branch_out,
             'byDay'         => $by_day_out,
         );
@@ -691,6 +699,7 @@ class AdminMenu {
                 'totalSales'     => (float) $r->total_sales,
                 'cashSales'      => (float) $r->cash_sales,
                 'cardSales'      => (float) $r->card_sales,
+                'transferSales'  => (float) ( $r->transfer_sales ?? 0 ),
                 'expectedCash'   => (float) $r->expected_cash,
                 'actualCash'     => $force_closed ? null : (float) $r->actual_cash,
                 'cashDifference' => $diff,
@@ -1824,6 +1833,7 @@ class AdminMenu {
             html += posStatCard('Total Discounts', posFmt(d.totalDiscount), '#d63638');
             html += posStatCard('Cash Sales', posFmt(d.cashSales), '#00a32a');
             html += posStatCard('Card Sales', posFmt(d.cardSales), '#00a32a');
+            html += posStatCard('Transfer Sales', posFmt(d.transferSales || 0), '#00a32a');
             html += '</div>';
 
             if (d.byBranch.length > 1) {
@@ -1844,7 +1854,7 @@ class AdminMenu {
             if (rows.length === 0) return '<p style="color:#999;">No shifts found in this range.</p>';
             let html = '<table class="wp-list-table widefat striped"><thead><tr>' +
                 '<th>Register</th><th>Branch</th><th>Cashier</th><th>Opened</th><th>Closed</th>' +
-                '<th>Opening Float</th><th>Total Sales</th><th>Expected Cash</th><th>Actual Cash</th><th>Difference</th><th>Status</th>' +
+                '<th>Opening Float</th><th>Total Sales</th><th>Transfer Sales</th><th>Expected Cash</th><th>Actual Cash</th><th>Difference</th><th>Status</th>' +
                 '</tr></thead><tbody>';
             rows.forEach(r => {
                 const diffColor = r.flagged ? 'color:#d63638;font-weight:700;' : '';
@@ -1859,6 +1869,7 @@ class AdminMenu {
                     '<td>' + (r.closedAt || '&mdash;') + '</td>' +
                     '<td>' + posFmt(r.openingFloat) + '</td>' +
                     '<td>' + posFmt(r.totalSales) + '</td>' +
+                    '<td>' + posFmt(r.transferSales || 0) + '</td>' +
                     '<td>' + posFmt(r.expectedCash) + '</td>' +
                     '<td>' + actualCashDisplay + '</td>' +
                     '<td style="' + diffColor + '">' + diffDisplay + '</td>' +
@@ -1916,9 +1927,10 @@ class AdminMenu {
                 rows.push(['Total Discounts', lastReportData.totalDiscount]);
                 rows.push(['Cash Sales', lastReportData.cashSales]);
                 rows.push(['Card Sales', lastReportData.cardSales]);
+                rows.push(['Transfer Sales', lastReportData.transferSales || 0]);
             } else if (currentReportType === 'shift_history') {
-                rows.push(['Register', 'Branch', 'Cashier', 'Opened', 'Closed', 'Opening Float', 'Total Sales', 'Expected Cash', 'Actual Cash', 'Difference', 'Status']);
-                lastReportData.forEach(r => rows.push([r.registerId, r.branchName, r.cashierName, r.openedAt, r.closedAt, r.openingFloat, r.totalSales, r.expectedCash, r.actualCash, r.cashDifference, r.status]));
+                rows.push(['Register', 'Branch', 'Cashier', 'Opened', 'Closed', 'Opening Float', 'Total Sales', 'Transfer Sales', 'Expected Cash', 'Actual Cash', 'Difference', 'Status']);
+                lastReportData.forEach(r => rows.push([r.registerId, r.branchName, r.cashierName, r.openedAt, r.closedAt, r.openingFloat, r.totalSales, r.transferSales || 0, r.expectedCash, r.actualCash, r.cashDifference, r.status]));
             } else if (currentReportType === 'top_products') {
                 rows.push(['Product', 'SKU', 'Qty Sold', 'Revenue']);
                 lastReportData.top.forEach(p => rows.push([p.name, p.sku, p.qty, p.revenue]));

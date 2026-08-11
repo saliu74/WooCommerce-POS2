@@ -165,6 +165,16 @@ class SalesEngine {
             return $shift_check;
         }
 
+        // --- Delivery requires an address (defense in depth — the
+        // terminal already checks this before submitting) ---
+        if ( 'delivery' === ( $payload['fulfillmentType'] ?? 'pickup' )
+            && empty( trim( $payload['deliveryAddress'] ?? '' ) ) ) {
+            return new \WP_Error(
+                'delivery_address_required',
+                __( 'A delivery address is required for delivery orders.', 'wc-pos-pro' )
+            );
+        }
+
         // --- Whole-order discount pre-check (separate from the per-item
         // discount feature above, which stays unchanged) ---
         // Three modes, mirroring the flexibility already offered per-item:
@@ -328,6 +338,26 @@ class SalesEngine {
         $order->update_meta_data( '_wc_pos_cashier_name',   sanitize_text_field( $payload['cashierName'] ?? '' ) );
         $order->update_meta_data( '_wc_pos_payments',       $payload['payments'] ?? array() );
         $order->update_meta_data( '_wc_pos_idempotency_key', $idempotency_key );
+
+        // Delivery feature: the terminal UI (Pickup/Delivery toggle +
+        // address field) already existed but was never actually wired to
+        // anything server-side — the address was captured in the browser
+        // and then silently discarded on submit. Stored as dedicated meta,
+        // and — for delivery orders — also written to WooCommerce's normal
+        // shipping-address field so it shows up in the standard admin
+        // order screen without needing a custom admin UI.
+        $fulfillment_type = in_array( $payload['fulfillmentType'] ?? 'pickup', array( 'pickup', 'delivery' ), true )
+            ? $payload['fulfillmentType']
+            : 'pickup';
+        $order->update_meta_data( '_wc_pos_fulfillment_type', $fulfillment_type );
+
+        if ( 'delivery' === $fulfillment_type ) {
+            $delivery_address = sanitize_textarea_field( $payload['deliveryAddress'] ?? '' );
+            $order->update_meta_data( '_wc_pos_delivery_address', $delivery_address );
+            if ( $delivery_address ) {
+                $order->set_shipping_address_1( $delivery_address );
+            }
+        }
 
         // --- Bug fix (#3): capture the cashier's order note / terminal reference ---
         // Stored three ways so it's visible wherever staff might look for it:

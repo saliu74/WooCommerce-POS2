@@ -984,9 +984,10 @@ class REST_Server {
             'limit'       => -1,
         ) );
 
-        $total_sales = 0;
-        $cash_sales  = 0;
-        $card_sales  = 0;
+        $total_sales    = 0;
+        $cash_sales     = 0;
+        $card_sales     = 0;
+        $transfer_sales = 0;
 
         foreach ( $orders as $order ) {
             $total = (float) $order->get_total();
@@ -1000,6 +1001,8 @@ class REST_Server {
                         $cash_sales += $amount;
                     } elseif ( 'card' === $method ) {
                         $card_sales += $amount;
+                    } elseif ( 'transfer' === $method ) {
+                        $transfer_sales += $amount;
                     }
                 }
             }
@@ -1020,11 +1023,12 @@ class REST_Server {
                 'total_sales'     => $total_sales,
                 'cash_sales'      => $cash_sales,
                 'card_sales'      => $card_sales,
+                'transfer_sales'  => $transfer_sales,
                 'status'          => 'closed',
                 'closing_notes'   => $notes,
             ),
             array( 'id' => $shift->id ),
-            array( '%s', '%f', '%f', '%f', '%f', '%f', '%f', '%s', '%s' ),
+            array( '%s', '%f', '%f', '%f', '%f', '%f', '%f', '%f', '%s', '%s' ),
             array( '%s' )
         );
 
@@ -1045,6 +1049,7 @@ class REST_Server {
                 'totalSales'     => $total_sales,
                 'cashSales'      => $cash_sales,
                 'cardSales'      => $card_sales,
+                'transferSales'  => $transfer_sales,
                 'openingFloat'   => floatval( $shift->opening_float ),
                 'expectedCash'   => $expected_cash,
                 'actualCash'     => $actual_cash,
