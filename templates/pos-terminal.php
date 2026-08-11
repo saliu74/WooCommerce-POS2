@@ -568,6 +568,15 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         </div>
     </div>
 
+    <!-- Closing-time reminder: shown once per day, starting 10 minutes
+         before the 6:00 PM official closing time, only while a shift is
+         open on this register. Dismissible; doesn't block anything. -->
+    <div id="closing-time-reminder" class="hidden fixed top-16 left-1/2 -translate-x-1/2 z-40 bg-amber-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl shadow-2xl items-center space-x-3 max-w-sm">
+        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        <span id="closing-time-reminder-text">Reminder: closing time is approaching. Please close your register shift soon.</span>
+        <button onclick="dismissClosingReminder()" class="text-white/80 hover:text-white font-extrabold text-sm shrink-0">&times;</button>
+    </div>
+
     <!-- Hidden Printable Receipt Template -->
     <div id="printable-receipt" class="hidden p-6 font-mono text-xs text-black bg-white">
         <!-- Receipt width set dynamically from config -->
@@ -967,7 +976,63 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             currentShiftStatus = reg.status;
 
             updateShiftIndicator();
+            checkClosingTimeReminder();
         }
+
+        // ---------------------------------------------------------------
+        // Closing-time reminder — official closing time is 6:00 PM.
+        // Reminds whoever's holding an open shift starting 10 minutes
+        // before, once per calendar day. Purely a reminder — never blocks
+        // anything; the actual enforcement (can't open tomorrow's shift
+        // until today's is closed) lives in the shift-open check itself.
+        // Uses the device's local clock, same as any other wall-clock
+        // reminder — assumes the terminal's system time is reasonably
+        // accurate, which is standard for a till.
+        // ---------------------------------------------------------------
+
+        const CLOSING_HOUR = 18; // 6:00 PM
+        let closingReminderShownDate = null;
+        let closingReminderDismissed = false;
+
+        function checkClosingTimeReminder() {
+            if (currentShiftStatus !== 'open') return;
+
+            const now = new Date();
+            const todayStr = now.toDateString();
+
+            // Already shown (or dismissed) for today — a fresh day resets both.
+            if (closingReminderShownDate !== todayStr) {
+                closingReminderDismissed = false;
+            }
+            if (closingReminderDismissed) return;
+
+            const closingTime = new Date(now);
+            closingTime.setHours(CLOSING_HOUR, 0, 0, 0);
+            const reminderStart = new Date(closingTime.getTime() - 10 * 60 * 1000);
+
+            if (now >= reminderStart) {
+                closingReminderShownDate = todayStr;
+                const banner = document.getElementById('closing-time-reminder');
+                const text   = document.getElementById('closing-time-reminder-text');
+                if (banner && text) {
+                    const closingLabel = closingTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                    text.textContent = 'Reminder: closing time is ' + closingLabel + '. Please close your register shift soon.';
+                    banner.classList.remove('hidden');
+                    banner.classList.add('flex');
+                }
+            }
+        }
+
+        function dismissClosingReminder() {
+            closingReminderDismissed = true;
+            const banner = document.getElementById('closing-time-reminder');
+            if (banner) {
+                banner.classList.add('hidden');
+                banner.classList.remove('flex');
+            }
+        }
+
+        setInterval(checkClosingTimeReminder, 60000); // check every minute
 
         function updateShiftIndicator() {
             const indicator = document.getElementById('shift-indicator');
@@ -1040,6 +1105,19 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 const data = await res.json();
 
                 if (!data.success) {
+                    // Shift-closure enforcement: if this failed specifically
+                    // because a shift from a previous day is still open,
+                    // switch the modal straight into "close" mode so staff
+                    // have an immediate, obvious next step instead of being
+                    // stuck looking at an error with nothing to do about it.
+                    // openShiftModal() clears the error box when it runs, so
+                    // the explanatory message is set AFTER switching modes,
+                    // not before, or it would be wiped out immediately.
+                    if (data.isPreviousDay) {
+                        currentShiftStatus = 'open';
+                        updateShiftIndicator();
+                        openShiftModal();
+                    }
                     errorBox.textContent = data.message || 'Could not complete this action.';
                     errorBox.classList.remove('hidden');
                     return;

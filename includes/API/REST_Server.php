@@ -906,17 +906,37 @@ class REST_Server {
         $registers_table = $wpdb->prefix . 'wc_pos_registers';
 
         if ( 'open' === $action ) {
-            // Check for an already-open shift on this register.
+            // Check for an already-open shift on this register. This
+            // already prevents starting a new day's shift while a previous
+            // one is still open, on this register, regardless of the day —
+            // the gap wasn't the enforcement itself, it was clarity: staff
+            // seeing "a shift is already open" had no way to tell it was
+            // actually YESTERDAY's shift they'd forgotten to close, versus
+            // some other kind of error.
             $open_shift = $wpdb->get_row( $wpdb->prepare(
-                "SELECT id FROM {$shifts_table} WHERE register_id = %s AND status = 'active' LIMIT 1",
+                "SELECT id, opened_at FROM {$shifts_table} WHERE register_id = %s AND status = 'active' LIMIT 1",
                 $register_id
             ) );
 
             if ( $open_shift ) {
+                $opened_at_local   = get_date_from_gmt( $open_shift->opened_at, 'Y-m-d H:i:s' );
+                $opened_date_local = substr( $opened_at_local, 0, 10 );
+                $today_local       = current_time( 'Y-m-d' );
+                $is_previous_day   = $opened_date_local !== $today_local;
+
+                $message = $is_previous_day
+                    ? sprintf(
+                        /* translators: %s: date/time the unclosed shift was opened */
+                        __( 'A shift from %s is still open on this register and must be closed before starting a new one today.', 'wc-pos-pro' ),
+                        date_i18n( 'M j, g:i A', strtotime( $opened_at_local ) )
+                    )
+                    : __( 'A shift is already open on this register. Close it before opening a new one.', 'wc-pos-pro' );
+
                 return new \WP_REST_Response( array(
-                    'success'  => false,
-                    'message'  => __( 'A shift is already open on this register. Close it before opening a new one.', 'wc-pos-pro' ),
-                    'shiftId'  => $open_shift->id,
+                    'success'       => false,
+                    'message'       => $message,
+                    'shiftId'       => $open_shift->id,
+                    'isPreviousDay' => $is_previous_day,
                 ), 409 );
             }
 
