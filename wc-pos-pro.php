@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce POS Pro (Enterprise Edition)
  * Plugin URI: https://github.com/saliu75/WooCommerce-pos-pro/
  * Description: Enterprise-grade, atomic inventory protected Point of Sale system built specifically for WooCommerce.
- * Version: 1.7.2
+ * Version: 1.8.1
  * Author: Muideen Saliu
  * Author URI: https://github.com/saliu74
  * License: GPL-2.0+
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
 
-define( 'WC_POS_VERSION', '1.7.2' );
+define( 'WC_POS_VERSION', '1.8.1' );
 define( 'WC_POS_FILE', __FILE__ );
 define( 'WC_POS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WC_POS_URL', plugin_dir_url( __FILE__ ) );
@@ -140,26 +140,21 @@ final class WC_POS_Pro {
         // and re-checks again on every future update) and recreate anything
         // missing. dbDelta() is always safe to re-run — it won't touch
         // existing data, only creates what's missing or brings schema in line.
+        //
+        // Bug fix: this previously only called create_tables() when a table
+        // was found COMPLETELY missing — so a table that already existed
+        // from an earlier version, but was missing a newly-added COLUMN
+        // (e.g. transfer_sales, added to wc_pos_shifts for the Bank
+        // Transfer feature), never got that column added. dbDelta() only
+        // ever runs when re-invoked; "table exists" isn't the same as
+        // "schema is current." Any query referencing a column that hadn't
+        // actually been added yet would fail with a genuine database error
+        // — which is exactly what happened on shift close. Now it always
+        // re-runs on a version change, regardless of whether any table was
+        // fully missing, since dbDelta() is safe and idempotent either way.
         $verified_version = get_option( 'wc_pos_tables_verified_version', '' );
         if ( $verified_version !== WC_POS_VERSION ) {
-            $expected_tables = array(
-                'wc_pos_branches',
-                'wc_pos_branch_stock',
-                'wc_pos_registers',
-                'wc_pos_shifts',
-                'wc_pos_inventory_logs',
-                'wc_pos_transfers',
-                'wc_pos_tax_rates',
-            );
-            $missing = array();
-            foreach ( $expected_tables as $t ) {
-                if ( ! $this->table_exists( $wpdb->prefix . $t ) ) {
-                    $missing[] = $t;
-                }
-            }
-            if ( ! empty( $missing ) ) {
-                WCPOS\Database\Tables::create_tables();
-            }
+            WCPOS\Database\Tables::create_tables();
             update_option( 'wc_pos_tables_verified_version', WC_POS_VERSION );
         }
 

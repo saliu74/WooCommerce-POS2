@@ -808,8 +808,9 @@ class REST_Server {
      */
     public function list_registers( $request ) {
         global $wpdb;
-        $table     = $wpdb->prefix . 'wc_pos_registers';
-        $branch_id = sanitize_text_field( $request->get_param( 'branchId' ) ?? '' );
+        $table        = $wpdb->prefix . 'wc_pos_registers';
+        $shifts_table = $wpdb->prefix . 'wc_pos_shifts';
+        $branch_id    = sanitize_text_field( $request->get_param( 'branchId' ) ?? '' );
 
         if ( $branch_id ) {
             $rows = $wpdb->get_results( $wpdb->prepare(
@@ -820,13 +821,28 @@ class REST_Server {
             $rows = $wpdb->get_results( "SELECT id, name, location, status, branch_id FROM {$table} ORDER BY name ASC" );
         }
 
+        // Bug fix: this previously returned the register's own 'status'
+        // column directly — but that column and the shifts table can end
+        // up disagreeing (e.g. if one of the two related database writes
+        // during shift open/close succeeds while the other fails). The
+        // terminal's shift indicator relies entirely on this endpoint, so
+        // when the two disagreed, the terminal kept showing the wrong
+        // state indefinitely with nothing to correct it. Status is now
+        // derived live from whether an active shift actually exists for
+        // each register — the same ground-truth source already used to fix
+        // this exact drift on the admin Registers screen — rather than
+        // trusting a column that can go stale.
+        $registers_with_active_shift = $wpdb->get_col(
+            "SELECT DISTINCT register_id FROM {$shifts_table} WHERE status = 'active'"
+        );
+
         $registers = array();
         foreach ( $rows as $r ) {
             $registers[] = array(
                 'id'       => $r->id,
                 'name'     => $r->name,
                 'location' => $r->location,
-                'status'   => $r->status,
+                'status'   => in_array( $r->id, $registers_with_active_shift, true ) ? 'open' : 'closed',
                 'branchId' => $r->branch_id,
             );
         }
@@ -945,7 +961,15 @@ class REST_Server {
             $opening_float = floatval( $params['openingFloat'] ?? 0 );
             $notes         = sanitize_textarea_field( $params['notes'] ?? '' );
 
-            $wpdb->insert(
+            // Bug fix: neither insert/update result here was ever checked —
+            // a genuine database error (e.g. a column missing from an
+            // outdated table schema — see the self-healing fix in
+            // wc-pos-pro.php) either failed silently (leaving the register
+            // and shifts table out of sync with each other) or broke the
+            // JSON response entirely, which the frontend could only report
+            // as a generic "Network error." Both writes are now checked and
+            // a real database error is returned as valid JSON either way.
+            $insert_result = $wpdb->insert(
                 $shifts_table,
                 array(
                     'id'             => $shift_id,
@@ -960,14 +984,46 @@ class REST_Server {
                 )
             );
 
+            if ( false === $insert_result ) {
+                return new \WP_REST_Response( array(
+                    'success' => false,
+                    'message' => 'Database error: ' . $wpdb->last_error,
+                ), 500 );
+            }
+
+            // Same verification principle as the close path: confirm the
+            // row genuinely exists and is active before reporting success.
+            $verified_shift_status = $wpdb->get_var( $wpdb->prepare(
+                "SELECT status FROM {$shifts_table} WHERE id = %s",
+                $shift_id
+            ) );
+
+            if ( 'active' !== $verified_shift_status ) {
+                return new \WP_REST_Response( array(
+                    'success' => false,
+                    'message' => __( 'The new shift could not be confirmed as opened. Please try again.', 'wc-pos-pro' ),
+                ), 500 );
+            }
+
             // Mark register as open.
-            $wpdb->update(
+            $update_result = $wpdb->update(
                 $registers_table,
                 array( 'status' => 'open', 'current_shift_id' => $shift_id ),
                 array( 'id' => $register_id ),
                 array( '%s', '%s' ),
                 array( '%s' )
             );
+
+            if ( false === $update_result ) {
+                // The shift row was created but the register's own status
+                // couldn't be updated — roll the shift back rather than
+                // leave a shift active with no register reflecting it.
+                $wpdb->delete( $shifts_table, array( 'id' => $shift_id ), array( '%s' ) );
+                return new \WP_REST_Response( array(
+                    'success' => false,
+                    'message' => 'Database error: ' . $wpdb->last_error,
+                ), 500 );
+            }
 
             return rest_ensure_response( array(
                 'success' => true,
@@ -1034,7 +1090,13 @@ class REST_Server {
         $cash_diff      = $actual_cash - $expected_cash;
         $notes          = sanitize_textarea_field( $params['notes'] ?? '' );
 
-        $wpdb->update(
+        // Bug fix: same as the open-shift path above — neither update
+        // result here was checked, so a genuine database error (e.g. a
+        // column missing from an outdated table schema) either failed
+        // silently or broke the JSON response, leaving the shift stuck as
+        // 'active' in the database while the terminal had no way to know
+        // the close hadn't actually taken effect.
+        $shift_update_result = $wpdb->update(
             $shifts_table,
             array(
                 'closed_at'       => current_time( 'mysql', true ),
@@ -1053,14 +1115,54 @@ class REST_Server {
             array( '%s' )
         );
 
+        if ( false === $shift_update_result ) {
+            return new \WP_REST_Response( array(
+                'success' => false,
+                'message' => 'Database error: ' . $wpdb->last_error,
+            ), 500 );
+        }
+
+        // Bug fix: $wpdb->update() returns the number of rows AFFECTED, not
+        // a boolean — it only returns false on a genuine SQL error. A query
+        // that runs without error but matches/changes zero rows returns 0,
+        // and 0 !== false, so the check above never caught it: a close
+        // request could report "success" with a fully-computed summary
+        // (calculated independently from order data, so it always looks
+        // right) while the shift row itself never actually changed to
+        // 'closed' in the database. Explicitly re-read the row now and
+        // confirm it's genuinely closed before ever telling the client it
+        // succeeded.
+        $verified_status = $wpdb->get_var( $wpdb->prepare(
+            "SELECT status FROM {$shifts_table} WHERE id = %s",
+            $shift->id
+        ) );
+
+        if ( 'closed' !== $verified_status ) {
+            return new \WP_REST_Response( array(
+                'success' => false,
+                'message' => sprintf(
+                    /* translators: %s: the shift's actual status after the update was attempted */
+                    __( 'The shift could not be confirmed as closed (status is still "%s" after the update). Please try again, or use Force Close Shift from POS > Registers.', 'wc-pos-pro' ),
+                    $verified_status ?: 'unknown'
+                ),
+            ), 500 );
+        }
+
         // Mark register as closed.
-        $wpdb->update(
+        $register_update_result = $wpdb->update(
             $registers_table,
             array( 'status' => 'closed', 'current_shift_id' => null ),
             array( 'id' => $register_id ),
             array( '%s', '%s' ),
             array( '%s' )
         );
+
+        if ( false === $register_update_result ) {
+            return new \WP_REST_Response( array(
+                'success' => false,
+                'message' => 'Database error: ' . $wpdb->last_error,
+            ), 500 );
+        }
 
         return rest_ensure_response( array(
             'success'         => true,

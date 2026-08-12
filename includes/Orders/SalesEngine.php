@@ -158,12 +158,15 @@ class SalesEngine {
             return new \WP_Error( 'out_of_stock', implode( ' | ', $stock_check_errors ) );
         }
 
-        // --- Enforce an open register shift before allowing any sale ---
+        // --- Shift enforcement: disabled per client decision (2026-08) ---
+        // The open-shift requirement was causing real sales disruption due
+        // to reliability issues in the shift close flow that couldn't be
+        // resolved quickly enough to justify blocking live sales on it.
+        // require_open_shift() itself, the shifts table, the Shift History
+        // report, and the admin Force Close tooling are all left fully
+        // intact — only the hard block on create_pos_order() is removed —
+        // so this can be re-enabled with a single line change later.
         $register_id = sanitize_text_field( $payload['registerId'] ?? 'REG-MAIN' );
-        $shift_check = self::require_open_shift( $register_id );
-        if ( is_wp_error( $shift_check ) ) {
-            return $shift_check;
-        }
 
         // --- Delivery requires an address (defense in depth — the
         // terminal already checks this before submitting) ---

@@ -1285,6 +1285,18 @@ class AdminMenu {
         foreach ( $branches as $b ) {
             $branch_names[ $b->id ] = $b->name;
         }
+
+        // Bug fix: the Force Close Shift button used to key off the
+        // register's own 'status' column — but that column can drift out
+        // of sync with reality (as happened here: a failed shift-close
+        // left the shift row itself still 'active' while the register's
+        // status had already been marked 'closed'). Query the shifts
+        // table directly instead — that's the actual source of truth for
+        // "is something blocking this register from opening a new shift."
+        $registers_with_active_shift = $wpdb->get_col(
+            "SELECT DISTINCT register_id FROM {$wpdb->prefix}wc_pos_shifts WHERE status = 'active'"
+        );
+
         $nonce = wp_create_nonce( 'wc_pos_register_nonce' );
         ?>
         <div class="wrap">
@@ -1315,16 +1327,24 @@ class AdminMenu {
                     <tbody id="registers-tbody">
                     <?php if ( empty( $registers ) ) : ?>
                         <tr id="no-registers-row"><td colspan="5" style="text-align:center;color:#999;"><?php esc_html_e( 'No registers created yet.', 'wc-pos-pro' ); ?></td></tr>
-                    <?php else : foreach ( $registers as $r ) : ?>
+                    <?php else : foreach ( $registers as $r ) :
+                        $has_active_shift = in_array( $r->id, $registers_with_active_shift, true );
+                        $status_mismatch  = $has_active_shift !== ( 'open' === $r->status );
+                    ?>
                         <tr id="register-row-<?php echo esc_attr( $r->id ); ?>">
                             <td><?php echo esc_html( $r->name ); ?></td>
                             <td><?php echo esc_html( $branch_names[ $r->branch_id ] ?? $r->branch_id ); ?></td>
                             <td><?php echo esc_html( $r->location ); ?></td>
-                            <td><?php echo esc_html( ucfirst( $r->status ) ); ?></td>
+                            <td>
+                                <?php echo esc_html( ucfirst( $r->status ) ); ?>
+                                <?php if ( $status_mismatch ) : ?>
+                                    <span style="color:#b45309;font-size:11px;" title="<?php esc_attr_e( 'This register\'s status and its actual shift record disagree — use Force Close Shift to reconcile.', 'wc-pos-pro' ); ?>">&#9888; <?php esc_html_e( 'out of sync', 'wc-pos-pro' ); ?></span>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <button class="button button-small" onclick="posEditRegister(<?php echo esc_js( json_encode( $r ) ); ?>)"><?php esc_html_e( 'Edit', 'wc-pos-pro' ); ?></button>
                                 <button class="button button-small" style="color:#c00;" onclick="posDeleteRegister('<?php echo esc_js( $r->id ); ?>')"><?php esc_html_e( 'Delete', 'wc-pos-pro' ); ?></button>
-                                <?php if ( 'open' === $r->status ) : ?>
+                                <?php if ( $has_active_shift ) : ?>
                                 <button class="button button-small" style="color:#b45309;" onclick="posForceCloseShift('<?php echo esc_js( $r->id ); ?>')" title="<?php esc_attr_e( 'Use this if a shift is stuck open and cannot be closed normally from the terminal.', 'wc-pos-pro' ); ?>"><?php esc_html_e( 'Force Close Shift', 'wc-pos-pro' ); ?></button>
                                 <?php endif; ?>
                             </td>

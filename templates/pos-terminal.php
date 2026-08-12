@@ -995,32 +995,11 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         let closingReminderDismissed = false;
 
         function checkClosingTimeReminder() {
-            if (currentShiftStatus !== 'open') return;
-
-            const now = new Date();
-            const todayStr = now.toDateString();
-
-            // Already shown (or dismissed) for today — a fresh day resets both.
-            if (closingReminderShownDate !== todayStr) {
-                closingReminderDismissed = false;
-            }
-            if (closingReminderDismissed) return;
-
-            const closingTime = new Date(now);
-            closingTime.setHours(CLOSING_HOUR, 0, 0, 0);
-            const reminderStart = new Date(closingTime.getTime() - 10 * 60 * 1000);
-
-            if (now >= reminderStart) {
-                closingReminderShownDate = todayStr;
-                const banner = document.getElementById('closing-time-reminder');
-                const text   = document.getElementById('closing-time-reminder-text');
-                if (banner && text) {
-                    const closingLabel = closingTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-                    text.textContent = 'Reminder: closing time is ' + closingLabel + '. Please close your register shift soon.';
-                    banner.classList.remove('hidden');
-                    banner.classList.add('flex');
-                }
-            }
+            // Shift feature disabled per client decision — this reminder
+            // has no purpose while shifts aren't enforced. Left as a no-op
+            // (rather than removing the interval/call sites) so it's a
+            // one-line change to bring back if shifts are re-enabled later.
+            return;
         }
 
         function dismissClosingReminder() {
@@ -1035,18 +1014,15 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         setInterval(checkClosingTimeReminder, 60000); // check every minute
 
         function updateShiftIndicator() {
+            // Shift feature disabled per client decision (2026-08) — the
+            // header indicator and its open/close prompts were a source of
+            // real disruption due to close-flow reliability issues that
+            // couldn't be resolved quickly enough. Kept as a no-op (rather
+            // than deleting the element/logic) so re-enabling later is a
+            // one-line change: restore the body below.
             const indicator = document.getElementById('shift-indicator');
-            const label = document.getElementById('shift-indicator-label');
-            if (!currentRegisterId) { indicator.classList.add('hidden'); return; }
-
-            indicator.classList.remove('hidden');
-            if (currentShiftStatus === 'open') {
-                label.textContent = 'Shift: OPEN';
-                indicator.className = 'text-[11px] px-2.5 py-1 rounded-lg font-mono transition border bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/30';
-            } else {
-                label.textContent = 'Shift: CLOSED';
-                indicator.className = 'text-[11px] px-2.5 py-1 rounded-lg font-mono transition border bg-slate-700/40 hover:bg-slate-700/60 text-slate-300 border-slate-600/40';
-            }
+            if (indicator) indicator.classList.add('hidden');
+            return;
         }
 
         function openShiftModal() {
@@ -1105,6 +1081,8 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 const data = await res.json();
 
                 if (!data.success) {
+                    console.error('Shift action failed. Full response:', data);
+
                     // Shift-closure enforcement: if this failed specifically
                     // because a shift from a previous day is still open,
                     // switch the modal straight into "close" mode so staff
@@ -1135,8 +1113,16 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     summaryBox.classList.remove('hidden');
                 }
 
-                currentShiftStatus = (action === 'open') ? 'open' : 'closed';
-                updateShiftIndicator();
+                // Bug fix: this previously trusted the "success" response and
+                // set currentShiftStatus optimistically on the client, with
+                // no re-check against the server. If the database update
+                // and the response ever disagreed for any reason, the
+                // terminal would keep showing the wrong status indefinitely
+                // with nothing to catch it. Now re-fetches the real status
+                // from the server right after every action, so the display
+                // always reflects what the database actually says rather
+                // than what the client assumes happened.
+                await refreshShiftStatus();
 
                 if (action === 'open') {
                     closeShiftModal();
@@ -1422,11 +1408,26 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         let currentProductPage = 1;
         let productTotalPages  = 1;
         let productSearchTerm  = '';
-        let isLoadingMoreProducts = false;
+
+        let currentProductsAbortController = null;
 
         async function fetchProducts(page = 1, append = false) {
-            if (isLoadingMoreProducts) return;
-            isLoadingMoreProducts = true;
+            // Bug fix: this used to guard with a simple "one request at a
+            // time" flag that made a NEW request silently no-op if a
+            // previous one hadn't finished yet — which is exactly why a
+            // cashier could type a search and have nothing happen until
+            // they clicked Refresh: whatever they'd just typed was silently
+            // never fetched if the prior request was still in flight.
+            // AbortController fixes this properly — the newest request
+            // always wins, canceling whatever was still pending, and an
+            // aborted request's response (even if it somehow still arrives)
+            // is safely ignored rather than overwriting current results.
+            if (currentProductsAbortController) {
+                currentProductsAbortController.abort();
+            }
+            const thisController = new AbortController();
+            currentProductsAbortController = thisController;
+
             updateLoadMoreButton(true);
 
             try {
@@ -1437,7 +1438,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 params.set('page', page);
 
                 const url = restUrl + '/products?' + params.toString();
-                const res = await fetch(url, { headers: { 'X-WP-Nonce': restNonce } });
+                const res = await fetch(url, { headers: { 'X-WP-Nonce': restNonce }, signal: thisController.signal });
                 if (!res.ok) throw new Error('API Error');
                 const data = await res.json();
 
@@ -1458,17 +1459,28 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     products = [];
                 }
             } catch (e) {
+                if (e.name === 'AbortError') {
+                    // Superseded by a newer request — that request's own
+                    // handler will update the display; nothing to do here.
+                    return;
+                }
                 if (!append) products = DEMO_PRODUCTS;
             } finally {
-                isLoadingMoreProducts = false;
-                updateLoadMoreButton(false);
+                if (currentProductsAbortController === thisController) {
+                    currentProductsAbortController = null;
+                    updateLoadMoreButton(false);
+                }
             }
             renderProducts();
         }
 
-        // Debounced server-side search — replaces the old client-side-only
-        // filter so every keystroke (after a short pause) queries the full
-        // catalog rather than whatever's already loaded in the browser.
+        // Instant-feel search: fires on every keystroke via a very short
+        // debounce (just enough to collapse rapid keystrokes into one
+        // request, not to add a noticeable delay) — combined with the
+        // AbortController fix above, each new keystroke's request now
+        // actually supersedes the previous one instead of getting silently
+        // dropped, which is what made results feel like they needed a
+        // manual refresh to "catch up."
         let productSearchDebounce = null;
         function onProductSearchInput() {
             const termInput = document.getElementById('product-search');
@@ -1476,7 +1488,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             clearTimeout(productSearchDebounce);
             productSearchDebounce = setTimeout(() => {
                 fetchProducts(1, false);
-            }, 300);
+            }, 120);
         }
 
         function loadMoreProducts() {
@@ -2436,15 +2448,10 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
         async function processCheckout() {
             if (cart.length === 0) return;
 
-            // Bug fix: shift status must be enforced before a sale, not just
-            // tracked cosmetically. The server independently rejects any
-            // order for a register with no open shift; this check just gives
-            // a clearer message before the cashier builds out totals/payment
-            // rather than after a failed submission.
-            if (currentShiftStatus !== 'open') {
-                alert('This register does not have an open shift. Open a shift (see the header indicator) before processing sales.');
-                return;
-            }
+            // Shift enforcement disabled per client decision — see
+            // SalesEngine::create_pos_order() for details. The shift
+            // indicator/open-close flow still exists for anyone who wants
+            // to use it for tracking, it just no longer blocks a sale.
 
             // Delivery feature: an address is required if Delivery is
             // selected — otherwise the order would go out with no way to
