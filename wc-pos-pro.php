@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce POS Pro (Enterprise Edition)
  * Plugin URI: https://github.com/saliu75/WooCommerce-pos-pro/
  * Description: Enterprise-grade, atomic inventory protected Point of Sale system built specifically for WooCommerce.
- * Version: 1.8.1
+ * Version: 1.8.2
  * Author: Muideen Saliu
  * Author URI: https://github.com/saliu74
  * License: GPL-2.0+
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
 
-define( 'WC_POS_VERSION', '1.8.1' );
+define( 'WC_POS_VERSION', '1.8.2' );
 define( 'WC_POS_FILE', __FILE__ );
 define( 'WC_POS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WC_POS_URL', plugin_dir_url( __FILE__ ) );
@@ -124,6 +124,17 @@ final class WC_POS_Pro {
         add_filter( 'query_vars', array( $this, 'register_query_vars' ) );
         add_action( 'template_redirect', array( $this, 'handle_terminal_template' ) );
 
+        // Block customer-facing order emails from being sent to the
+        // auto-generated @pos.local placeholder address used for walk-in
+        // customers with no real email on file (see
+        // REST_Server::create_customer()). Never touches the admin
+        // "New Order" notification, and never affects a real customer
+        // email, online or POS-entered.
+        add_filter( 'woocommerce_email_recipient_customer_processing_order', array( $this, 'block_pos_local_email' ), 10, 2 );
+        add_filter( 'woocommerce_email_recipient_customer_completed_order', array( $this, 'block_pos_local_email' ), 10, 2 );
+        add_filter( 'woocommerce_email_recipient_customer_on_hold_order', array( $this, 'block_pos_local_email' ), 10, 2 );
+        add_filter( 'woocommerce_email_recipient_customer_invoice', array( $this, 'block_pos_local_email' ), 10, 2 );
+
         // Initialize API Endpoints.
         WCPOS\API\REST_Server::get_instance();
 
@@ -187,6 +198,19 @@ final class WC_POS_Pro {
     public function register_query_vars( $vars ) {
         $vars[] = 'wc_pos_terminal';
         return $vars;
+    }
+
+    /**
+     * Empties the recipient for a customer-facing order email if it's one
+     * of the auto-generated @pos.local placeholder addresses — an empty
+     * recipient makes WooCommerce silently skip sending that email, since
+     * there's no real person on the other end to receive it.
+     */
+    public function block_pos_local_email( $recipient, $order ) {
+        if ( $recipient && false !== strpos( $recipient, '@pos.local' ) ) {
+            return '';
+        }
+        return $recipient;
     }
 
     public function handle_terminal_template() {
