@@ -3,7 +3,7 @@
  * Plugin Name: WooCommerce POS Pro (Enterprise Edition)
  * Plugin URI: https://github.com/saliu75/WooCommerce-pos-pro/
  * Description: Enterprise-grade, atomic inventory protected Point of Sale system built specifically for WooCommerce.
- * Version: 1.8.2
+ * Version: 1.8.3
  * Author: Muideen Saliu
  * Author URI: https://github.com/saliu74
  * License: GPL-2.0+
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
     exit; // Exit if accessed directly.
 }
 
-define( 'WC_POS_VERSION', '1.8.2' );
+define( 'WC_POS_VERSION', '1.8.3' );
 define( 'WC_POS_FILE', __FILE__ );
 define( 'WC_POS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'WC_POS_URL', plugin_dir_url( __FILE__ ) );
@@ -135,6 +135,22 @@ final class WC_POS_Pro {
         add_filter( 'woocommerce_email_recipient_customer_on_hold_order', array( $this, 'block_pos_local_email' ), 10, 2 );
         add_filter( 'woocommerce_email_recipient_customer_invoice', array( $this, 'block_pos_local_email' ), 10, 2 );
 
+        // Bug fix: the four filters above only cover WooCommerce's own
+        // order-status emails — but every new POS customer (including
+        // walk-ins with no real email) gets a genuine WordPress user
+        // account created via wp_create_user(), which other plugins can
+        // independently hook into. A separate email-verification plugin,
+        // for example, sends its own "please activate your account" email
+        // straight to whatever address that account was created with —
+        // completely bypassing the WooCommerce-specific filters above.
+        // Rather than try to enumerate every plugin that might attempt to
+        // email a placeholder address, block it at the source every email
+        // in WordPress passes through: pre_wp_mail can short-circuit
+        // wp_mail() entirely before anything is sent, for any recipient
+        // ending in @pos.local, regardless of which plugin or hook
+        // triggered it.
+        add_filter( 'pre_wp_mail', array( $this, 'block_pos_local_wp_mail' ), 10, 2 );
+
         // Initialize API Endpoints.
         WCPOS\API\REST_Server::get_instance();
 
@@ -211,6 +227,29 @@ final class WC_POS_Pro {
             return '';
         }
         return $recipient;
+    }
+
+    /**
+     * Short-circuits wp_mail() entirely — before anything is actually sent
+     * — whenever every recipient is one of the auto-generated @pos.local
+     * placeholder addresses. Catches emails from ANY plugin, not just
+     * WooCommerce's own order emails (block_pos_local_email() above only
+     * covers those four specific hooks). Returning true here tells
+     * wp_mail() "this was handled, don't actually send it" without
+     * throwing an error — there's no real person behind the address, so
+     * there's nothing to actually deliver.
+     */
+    public function block_pos_local_wp_mail( $return, $atts ) {
+        $to      = $atts['to'] ?? '';
+        $to_list = is_array( $to ) ? $to : array( $to );
+
+        foreach ( $to_list as $recipient ) {
+            if ( is_string( $recipient ) && false !== strpos( $recipient, '@pos.local' ) ) {
+                return true;
+            }
+        }
+
+        return $return;
     }
 
     public function handle_terminal_template() {
