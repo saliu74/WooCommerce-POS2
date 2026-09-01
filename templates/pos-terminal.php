@@ -275,6 +275,9 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                                 <span id="cart-coupon-label">Coupon:</span><span id="cart-coupon-total" class="font-mono">-$0.00</span>
                             </div>
                             <div class="flex justify-between text-slate-400"><span id="cart-tax-label">Tax (Est.):</span><span id="cart-tax" class="font-mono">$0.00</span></div>
+                            <div class="flex justify-between text-sky-400 hidden" id="cart-delivery-fee-row">
+                                <span>Delivery Fee:</span><span id="cart-delivery-fee-total" class="font-mono">$0.00</span>
+                            </div>
                         </div>
 
                         <!-- Whole-order discount (separate from the per-item
@@ -377,10 +380,15 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                                 <button onclick="setFulfillmentType('pickup')" id="fulfill-btn-pickup" class="py-1.5 rounded-lg bg-indigo-600 text-white font-bold text-[11px] transition">Pickup</button>
                                 <button onclick="setFulfillmentType('delivery')" id="fulfill-btn-delivery" class="py-1.5 rounded-lg text-slate-400 hover:text-white font-bold text-[11px] transition">Delivery</button>
                             </div>
-                            <div id="delivery-address-row" class="hidden space-y-1">
+                            <div id="delivery-address-row" class="hidden space-y-1.5">
                                 <textarea id="delivery-address-input" rows="2" maxlength="500"
                                     placeholder="Delivery address (required for delivery orders)..."
                                     class="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none"></textarea>
+                                <div class="flex items-center space-x-2">
+                                    <label class="text-slate-400 text-[11px] shrink-0">Delivery Fee</label>
+                                    <input type="number" id="delivery-fee-input" min="0" step="0.01" placeholder="0.00" oninput="renderCart()"
+                                        class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500" />
+                                </div>
                             </div>
                         </div>
 
@@ -1765,12 +1773,24 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const couponDiscount = appliedOrderDiscount ? Math.min(appliedOrderDiscount.discountAmount, subtotal - totalDiscount) : 0;
             const netSubtotal = subtotal - totalDiscount - couponDiscount;
             const tax      = taxInclusive ? netSubtotal - (netSubtotal / (1 + taxRate)) : netSubtotal * taxRate;
-            const grandTotal = taxInclusive ? netSubtotal : netSubtotal + tax;
+            // Delivery fee is a separate charge, not part of the taxable
+            // product subtotal — added directly to the final total.
+            const deliveryFeeInput = document.getElementById('delivery-fee-input');
+            const deliveryFee = (currentFulfillmentType === 'delivery' && deliveryFeeInput) ? (parseFloat(deliveryFeeInput.value) || 0) : 0;
+            const grandTotal = (taxInclusive ? netSubtotal : netSubtotal + tax) + deliveryFee;
 
             document.getElementById('cart-subtotal').innerText = currencySymbol + subtotal.toFixed(2);
             document.getElementById('cart-tax').innerText      = currencySymbol + tax.toFixed(2) + (taxRate > 0 ? ' (' + (taxRate * 100).toFixed(1) + '%)' : '');
             document.getElementById('cart-tax-label').innerText = taxInclusive ? 'Tax (Incl.):' : 'Tax (Est.):';
             document.getElementById('cart-total').innerText    = currencySymbol + grandTotal.toFixed(2);
+
+            // Delivery fee row
+            if (deliveryFee > 0) {
+                document.getElementById('cart-delivery-fee-row').classList.remove('hidden');
+                document.getElementById('cart-delivery-fee-total').innerText = currencySymbol + deliveryFee.toFixed(2);
+            } else {
+                document.getElementById('cart-delivery-fee-row').classList.add('hidden');
+            }
 
             // Discount row
             if (totalDiscount > 0) {
@@ -2171,6 +2191,19 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             });
             const addressRow = document.getElementById('delivery-address-row');
             if (addressRow) addressRow.classList.toggle('hidden', type !== 'delivery');
+
+            // Bug fix: switching back to Pickup left a previously-entered
+            // delivery fee sitting in the (now hidden) input — since the
+            // total calculation only reads it when currentFulfillmentType
+            // is 'delivery', this was harmless numerically, but re-clearing
+            // it here avoids any stale value resurfacing if Delivery gets
+            // picked again later in the same sale, and keeps the display
+            // in sync immediately rather than only on the next render.
+            if ('pickup' === type) {
+                const feeInput = document.getElementById('delivery-fee-input');
+                if (feeInput) feeInput.value = '';
+            }
+            renderCart();
         }
 
         function updateTransferAmountDue() {
@@ -2472,7 +2505,13 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
             const couponDiscount = appliedOrderDiscount ? Math.min(appliedOrderDiscount.discountAmount, subtotal - totalDiscount) : 0;
             const netSubtotal   = subtotal - totalDiscount - couponDiscount;
             const tax           = taxInclusive ? netSubtotal - (netSubtotal / (1 + taxRate)) : netSubtotal * taxRate;
-            const grandTotal    = taxInclusive ? netSubtotal : netSubtotal + tax;
+            // Bug fix: same issue as the coupon discount above — this
+            // previously ignored the delivery fee entirely, so a delivery
+            // order's collected total (and change due) would be short by
+            // exactly the fee amount shown in the cart summary.
+            const checkoutDeliveryFeeInput = document.getElementById('delivery-fee-input');
+            const deliveryFee   = (currentFulfillmentType === 'delivery' && checkoutDeliveryFeeInput) ? (parseFloat(checkoutDeliveryFeeInput.value) || 0) : 0;
+            const grandTotal    = (taxInclusive ? netSubtotal : netSubtotal + tax) + deliveryFee;
 
             // Build payments array
             let payments = [];
@@ -2509,6 +2548,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                 orderDiscount:  appliedOrderDiscount ? { mode: appliedOrderDiscount.mode, code: appliedOrderDiscount.code || '', value: appliedOrderDiscount.value || 0 } : null,
                 fulfillmentType: currentFulfillmentType,
                 deliveryAddress: currentFulfillmentType === 'delivery' ? deliveryAddress : '',
+                deliveryFee: deliveryFee,
                 items: cart.map(c => ({
                     productId:      c.productId,
                     variationId:    c.variationId,
@@ -2549,6 +2589,7 @@ $currency_symbol = function_exists('get_woocommerce_currency_symbol') ? html_ent
                     selectCustomer(null);
                     document.getElementById('pos-order-note').value = '';
                     if (deliveryAddressInput) deliveryAddressInput.value = '';
+                    if (checkoutDeliveryFeeInput) checkoutDeliveryFeeInput.value = '';
                     setFulfillmentType('pickup');
                     fetchProducts();
                     // Responsive fix: on mobile, the cart is a full-screen

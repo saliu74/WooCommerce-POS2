@@ -360,6 +360,23 @@ class SalesEngine {
             if ( $delivery_address ) {
                 $order->set_shipping_address_1( $delivery_address );
             }
+
+            // Delivery fee: added as a positive fee line item (the same
+            // mechanism used for the manual whole-order discount, just
+            // adding to the total instead of subtracting from it) — there
+            // was previously no way to charge a delivery fee at all, only
+            // capture the address, which meant deliveries to more distant
+            // zones couldn't be charged for at the point of sale.
+            $delivery_fee = floatval( $payload['deliveryFee'] ?? 0 );
+            if ( $delivery_fee > 0 ) {
+                $fee = new \WC_Order_Item_Fee();
+                $fee->set_name( __( 'Delivery Fee', 'wc-pos-pro' ) );
+                $fee->set_amount( $delivery_fee );
+                $fee->set_total( $delivery_fee );
+                $fee->set_tax_status( 'none' );
+                $order->add_item( $fee );
+                $order->update_meta_data( '_wc_pos_delivery_fee', $delivery_fee );
+            }
         }
 
         // --- Bug fix (#3): capture the cashier's order note / terminal reference ---
@@ -377,8 +394,15 @@ class SalesEngine {
             $order->update_meta_data( '_wc_pos_terminal_reference', $order_note );
         }
 
-        $order->set_payment_method( 'wc_pos_custom' );
-        $order->set_payment_method_title( __( 'POS In-Person Payment', 'wc-pos-pro' ) );
+        // Bug fix: this previously always set the same generic payment
+        // method/title regardless of what the cashier actually selected —
+        // Cash, Card, and Bank Transfer all showed identically, and since
+        // WooCommerce didn't recognize the fixed slug used here, most order
+        // views displayed it simply as "Other" with no indication of the
+        // real method used. Now derived from the actual payments array.
+        $payment_info = self::derive_payment_method_info( $payload['payments'] ?? array() );
+        $order->set_payment_method( $payment_info['slug'] );
+        $order->set_payment_method_title( $payment_info['title'] );
 
         // Apply the whole-order discount now that all line items exist —
         // WooCommerce calculates the actual amounts against whatever's on
@@ -589,6 +613,61 @@ class SalesEngine {
         }
 
         return true;
+    }
+
+    /**
+     * Map the terminal's payments array (each entry like
+     * { method: 'cash'|'card'|'transfer', amount: 12.5 }) to a proper
+     * WooCommerce payment method slug + human-readable title, so orders
+     * actually reflect what the cashier used instead of a fixed generic
+     * value that WooCommerce doesn't recognize and displays as "Other."
+     * A split payment lists every method actually used, e.g.
+     * "Split (Cash + Card)".
+     */
+    private static function derive_payment_method_info( $payments ) {
+        $labels = array(
+            'cash'     => __( 'Cash', 'wc-pos-pro' ),
+            'card'     => __( 'Card', 'wc-pos-pro' ),
+            'transfer' => __( 'Bank Transfer', 'wc-pos-pro' ),
+        );
+
+        $fallback = array( 'slug' => 'wc_pos_custom', 'title' => __( 'POS Sale', 'wc-pos-pro' ) );
+
+        if ( ! is_array( $payments ) || empty( $payments ) ) {
+            return $fallback;
+        }
+
+        $methods_used = array();
+        foreach ( $payments as $payment ) {
+            $method = $payment['method'] ?? '';
+            if ( isset( $labels[ $method ] ) && ! in_array( $method, $methods_used, true ) ) {
+                $methods_used[] = $method;
+            }
+        }
+
+        if ( empty( $methods_used ) ) {
+            return $fallback;
+        }
+
+        if ( 1 === count( $methods_used ) ) {
+            return array(
+                'slug'  => 'wc_pos_' . $methods_used[0],
+                'title' => $labels[ $methods_used[0] ],
+            );
+        }
+
+        $used_labels = array_map( function ( $method ) use ( $labels ) {
+            return $labels[ $method ];
+        }, $methods_used );
+
+        return array(
+            'slug'  => 'wc_pos_split',
+            'title' => sprintf(
+                /* translators: %s: payment methods used in the split, e.g. "Cash + Card" */
+                __( 'Split (%s)', 'wc-pos-pro' ),
+                implode( ' + ', $used_labels )
+            ),
+        );
     }
 
     /**

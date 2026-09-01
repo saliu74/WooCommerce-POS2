@@ -249,42 +249,67 @@ class REST_Server {
         // what the product IS: its name or its SKU — nothing else. Resolved
         // via a direct title/SKU lookup instead of handing the term to
         // WooCommerce's own broad search.
+        //
+        // Bug fix (round 2): the first version of this fix required the
+        // ENTIRE search string to appear as one contiguous phrase, which
+        // turned out to be too strict for real use — cashiers don't type
+        // product names verbatim. "Unicorn plate" didn't match "Unicorn
+        // Head Shaped Plate" (the words aren't adjacent), and "White
+        // number 2" didn't match "40inches Number 2 White Foil Balloon"
+        // (right words, wrong order) — both returned nothing or missed
+        // real matches. Now splits the query into individual words and
+        // requires ALL of them to appear somewhere in the title or SKU,
+        // in any order/position — narrower than a full-text search across
+        // descriptions, broader than an exact phrase.
         if ( $search ) {
             global $wpdb;
-            $like = '%' . $wpdb->esc_like( sanitize_text_field( $search ) ) . '%';
 
-            // Variation title/SKU matches resolve to their parent product
-            // ID, since that's what's actually browsable/addable in the
-            // grid — consistent with how variable products are handled
-            // everywhere else in this endpoint.
-            $matching_ids = $wpdb->get_col( $wpdb->prepare(
-                "SELECT DISTINCT
-                    CASE WHEN p.post_type = 'product_variation' THEN p.post_parent ELSE p.ID END
-                 FROM {$wpdb->posts} p
-                 LEFT JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key = '_sku'
-                 WHERE p.post_type IN ( 'product', 'product_variation' )
-                   AND p.post_status = 'publish'
-                   AND ( p.post_title LIKE %s OR pm.meta_value LIKE %s )",
-                $like,
-                $like
-            ) );
+            $search_words = preg_split( '/\s+/', trim( sanitize_text_field( $search ) ) );
+            $search_words = array_filter( $search_words, function ( $w ) { return '' !== $w; } );
 
-            if ( empty( $matching_ids ) ) {
-                // No real matches — short-circuit with a correctly-shaped,
-                // empty response rather than falling through to an
-                // unfiltered product list.
-                return rest_ensure_response( array(
-                    'products'   => array(),
-                    'page'       => $page,
-                    'totalPages' => 0,
-                    'total'      => 0,
-                ) );
+            if ( ! empty( $search_words ) ) {
+                $word_clauses = array();
+                $like_params  = array();
+
+                foreach ( $search_words as $word ) {
+                    $like           = '%' . $wpdb->esc_like( $word ) . '%';
+                    $word_clauses[] = '( p.post_title LIKE %s OR pm.meta_value LIKE %s )';
+                    $like_params[]  = $like;
+                    $like_params[]  = $like;
+                }
+
+                // Every word must match somewhere (AND across words); each
+                // individual word can match either the title or the SKU
+                // (OR across fields) — variation title/SKU matches resolve
+                // to their parent product ID, since that's what's actually
+                // browsable/addable in the grid.
+                $sql = "SELECT DISTINCT
+                            CASE WHEN p.post_type = 'product_variation' THEN p.post_parent ELSE p.ID END
+                         FROM {$wpdb->posts} p
+                         LEFT JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key = '_sku'
+                         WHERE p.post_type IN ( 'product', 'product_variation' )
+                           AND p.post_status = 'publish'
+                           AND " . implode( ' AND ', $word_clauses );
+
+                $matching_ids = $wpdb->get_col( $wpdb->prepare( $sql, $like_params ) );
+
+                if ( empty( $matching_ids ) ) {
+                    // No real matches — short-circuit with a correctly-shaped,
+                    // empty response rather than falling through to an
+                    // unfiltered product list.
+                    return rest_ensure_response( array(
+                        'products'   => array(),
+                        'page'       => $page,
+                        'totalPages' => 0,
+                        'total'      => 0,
+                    ) );
+                }
+
+                $args['include'] = array_map( 'absint', $matching_ids );
+                // 'include' already scopes the result set precisely, so
+                // WooCommerce's own default title/content sort doesn't need to
+                // run — keep the alphabetical ordering set above.
             }
-
-            $args['include'] = array_map( 'absint', $matching_ids );
-            // 'include' already scopes the result set precisely, so
-            // WooCommerce's own default title/content sort doesn't need to
-            // run — keep the alphabetical ordering set above.
         }
         if ( $category ) {
             $args['category'] = array( sanitize_text_field( $category ) );
